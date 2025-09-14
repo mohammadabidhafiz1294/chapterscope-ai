@@ -34,35 +34,6 @@ predictor = VQEPredictor()
 data_loader = DataLoader()
 
 # Mock data for demonstration (in production, this would come from a database)
-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-
-from src.config.settings import get_settings
-from src.models import (
-    PredictionRequest,
-    PredictionResponse,
-    TopicResponse,
-    TrainingRequest,
-    TrainingResponse,
-    HealthResponse,
-)
-from src.services.vqe_predictor import VQEPredictor
-from src.services.data_loader import DataLoader
-
-# Initialize FastAPI app
-app = FastAPI(
-    title="VQE Exam Topic Prediction API",
-    description="API for quantum-classical hybrid exam topic prediction",
-    version="1.0.0",
-)
-
-# Initialize services
-settings = get_settings()
-predictor = VQEPredictor()
-data_loader = DataLoader()
-
-# Mock data for demonstration (in production, this would come from a database)
 mock_historical_data = {
     "quantum-mechanics": [15.0, 18.0, 22.0, 25.0, 28.0],  # Increasing trend
     "linear-algebra": [20.0, 19.0, 21.0, 20.0, 22.0],  # Stable trend
@@ -543,3 +514,20 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# Include report routes
+from src.api.reports import router as reports_router
+app.include_router(reports_router, prefix="/api", tags=["reports"])
+
+# Database initialization
+from src.config.database import init_database, close_database
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on startup."""
+    init_database()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Close database connections on shutdown."""
+    close_database()

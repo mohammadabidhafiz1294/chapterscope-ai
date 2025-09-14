@@ -28,6 +28,16 @@ venv/
 ENV/
 env/
 .venv/
+frontend/.env
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+backend/.env
+backend/.env.local
+backend/.env.development.local
+backend/.env.test.local
+backend/.env.production.local
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -82,6 +92,21 @@ augmented_data/
 # Logs
 logs/
 *.log
+django.log
+server.log
+eduquantum.log
+vqe_predictor.log
+
+# Node.js / Frontend
+frontend/node_modules/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.npm
+frontend/.yarn-integrity
+frontend/.parcel-cache/
+frontend/build/
+frontend/dist/
 
 # Environment Variables
 .env
@@ -102,6 +127,15 @@ Thumbs.db
 *.temp
 temp/
 tmp/
+
+# Test Coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Cache directories
+.cache/
+cache/
 
 # Configuration
 config.json

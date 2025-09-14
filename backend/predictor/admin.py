@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
-from .models import Syllabus, ExamPaper, Topic, Prediction
+from .models import ExamPaper, Topic, Prediction, Syllabus
 
 # Unregister the default User admin
 admin.site.unregister(User)
@@ -16,35 +16,51 @@ class CustomUserAdmin(UserAdmin):
 
 @admin.register(Syllabus)
 class SyllabusAdmin(admin.ModelAdmin):
-    list_display = ('title', 'user', 'uploaded_at', 'processed', 'topic_count')
-    list_filter = ('processed', 'uploaded_at', 'user')
-    search_fields = ('title', 'description', 'user__username')
+    list_display = ('title', 'user', 'subject', 'uploaded_at', 'processed', 'topic_count')
+    list_filter = ('subject', 'uploaded_at', 'processed', 'user')
+    search_fields = ('title', 'description', 'user__username', 'subject')
     readonly_fields = ('uploaded_at', 'processed_at')
     ordering = ('-uploaded_at',)
 
 @admin.register(ExamPaper)
 class ExamPaperAdmin(admin.ModelAdmin):
-    list_display = ('title', 'user', 'year', 'uploaded_at', 'question_count')
-    list_filter = ('year', 'uploaded_at', 'user')
+    list_display = ('title', 'user', 'year', 'uploaded_at', 'processed', 'topic_count')
+    list_filter = ('year', 'uploaded_at', 'processed', 'user')
     search_fields = ('title', 'description', 'user__username')
-    readonly_fields = ('uploaded_at',)
+    readonly_fields = ('uploaded_at', 'processed_at')
     ordering = ('-uploaded_at',)
 
 @admin.register(Topic)
 class TopicAdmin(admin.ModelAdmin):
-    list_display = ('name', 'syllabus', 'frequency', 'last_seen')
-    list_filter = ('syllabus__title', 'last_seen')
-    search_fields = ('name', 'description', 'syllabus__title')
+    list_display = ('name', 'get_source', 'frequency', 'last_seen')
+    list_filter = ('last_seen',)
+    search_fields = ('name', 'description')
     readonly_fields = ('created_at', 'last_seen')
-    ordering = ('-frequency',)
+
+    def get_source(self, obj):
+        if obj.syllabus:
+            return f"Syllabus: {obj.syllabus.title}"
+        elif obj.exam_paper:
+            return f"Exam: {obj.exam_paper.title}"
+        return "Unknown"
+    get_source.short_description = 'Source'
+    get_source.admin_order_field = 'name'
 
 @admin.register(Prediction)
 class PredictionAdmin(admin.ModelAdmin):
-    list_display = ('user', 'created_at', 'accuracy_score', 'prediction_type')
+    list_display = ('user', 'get_source', 'created_at', 'accuracy_score', 'prediction_type')
     list_filter = ('prediction_type', 'created_at', 'user')
     search_fields = ('user__username', 'description')
     readonly_fields = ('created_at', 'quantum_result', 'classical_result')
-    ordering = ('-created_at',)
+
+    def get_source(self, obj):
+        if obj.syllabus:
+            return f"Syllabus: {obj.syllabus.title}"
+        elif obj.exam_paper:
+            return f"Exam: {obj.exam_paper.title}"
+        return "Unknown"
+    get_source.short_description = 'Source'
+    get_source.admin_order_field = 'created_at'
 
 # Custom admin site header
 admin.site.site_header = 'EduQuantum Predictor Administration'
