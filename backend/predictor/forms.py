@@ -122,3 +122,50 @@ class PredictionForm(forms.Form):
             self.fields['exam_paper'].queryset = ExamPaper.objects.filter(
                 user=self.user
             )
+
+
+class ExamDeleteForm(forms.Form):
+    """Form for confirming exam paper deletion."""
+    confirm = forms.BooleanField(
+        required=True,
+        widget=forms.CheckboxInput(attrs={
+            'class': 'form-check-input'
+        }),
+        label='I confirm that I want to delete this exam paper permanently. This action cannot be undone.'
+    )
+
+
+class ExamYearUpdateForm(forms.Form):
+    """Form for updating exam paper year."""
+    year = forms.IntegerField(
+        min_value=1900,
+        max_value=2100,
+        widget=forms.NumberInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Enter new year'
+        }),
+        help_text='Enter the correct year for this exam paper'
+    )
+
+    def __init__(self, *args, **kwargs):
+        self.exam_paper = kwargs.pop('exam_paper', None)
+        self.user = kwargs.pop('user', None)
+        super().__init__(*args, **kwargs)
+        if self.exam_paper:
+            self.fields['year'].initial = self.exam_paper.year
+
+    def clean_year(self):
+        year = self.cleaned_data.get('year')
+        if year and self.exam_paper and self.user:
+            # Check for unique constraint
+            existing_exam = ExamPaper.objects.filter(
+                user=self.user,
+                title=self.exam_paper.title,
+                year=year
+            ).exclude(pk=self.exam_paper.pk).first()
+            
+            if existing_exam:
+                raise forms.ValidationError(
+                    f'An exam paper with the title "{self.exam_paper.title}" already exists for year {year}.'
+                )
+        return year

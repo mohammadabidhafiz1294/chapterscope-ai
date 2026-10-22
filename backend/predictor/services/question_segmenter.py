@@ -12,12 +12,16 @@ logger = logging.getLogger(__name__)
 try:
     nltk.data.find('tokenizers/punkt')
 except LookupError:
-    nltk.download('punkt', quiet=True)
+    try:
+        nltk.download('punkt', quiet=True)
+    except Exception as e:
+        logger.warning(f"Could not download NLTK punkt data: {e}")
 
 try:
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
+    # Try to download punkt_tab for newer NLTK versions
     nltk.download('punkt_tab', quiet=True)
+except Exception:
+    logger.warning("Could not download punkt_tab - using regular punkt tokenizer")
 
 
 @dataclass

@@ -48,6 +48,8 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
+    'predictor.middleware.SecurityHeadersMiddleware',
+    'predictor.middleware.CORSPreflightMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -181,6 +183,8 @@ MEDIA_ROOT = BASE_DIR / 'media'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",  # React development server
     "http://127.0.0.1:3000",  # Alternative localhost
+    "http://localhost:8001",  # Django development server
+    "http://127.0.0.1:8001",  # Alternative localhost for Django
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -205,6 +209,44 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken',
     'x-requested-with',
 ]
+
+# Security Headers for Cross-Origin Policy
+# These settings help resolve Cross-Origin-Opener-Policy warnings in development
+SECURE_CROSS_ORIGIN_OPENER_POLICY = None  # Disable COOP for localhost development
+CORS_ALLOW_ALL_ORIGINS = False  # Keep this False for security
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://localhost:\d+$",  # Allow any localhost port
+    r"^http://127\.0\.0\.1:\d+$",  # Allow any 127.0.0.1 port
+]
+
+# Additional CORS settings to prevent cross-origin issues
+CORS_EXPOSE_HEADERS = [
+    'Content-Type',
+    'X-CSRFToken',
+]
+
+# For development, we'll be more permissive with cross-origin policies
+if DEBUG:
+    # In development, allow more permissive cross-origin settings
+    # Note: CORS_REPLACE_HTTPS_REFERER has been removed in newer django-cors-headers
+    SECURE_REFERRER_POLICY = "unsafe-url"
+    
+    # Additional development-specific CORS settings
+    CORS_PREFLIGHT_MAX_AGE = 86400  # 24 hours - cache preflight requests
+    
+    # Disable strict security policies for localhost development
+    SECURE_CROSS_ORIGIN_OPENER_POLICY = None
+    
+    # Allow all localhost variations and disable some security checks
+    ALLOWED_HOSTS = ['*']  # Already set, but ensuring it's permissive
+    
+    # Additional settings to prevent COOP issues
+    X_FRAME_OPTIONS = 'SAMEORIGIN'  # Allow framing from same origin
+    SECURE_CONTENT_TYPE_NOSNIFF = False  # Disable content type sniffing protection
+    
+    # CORS settings specifically for the create route issue
+    CORS_ALLOW_ALL_ORIGINS = False  # Keep security, but use regex patterns
+    CORS_URLS_REGEX = r'^.*$'  # Apply CORS to all URLs
 
 # Logging
 LOGGING = {

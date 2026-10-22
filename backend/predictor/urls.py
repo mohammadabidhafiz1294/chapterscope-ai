@@ -13,6 +13,8 @@ urlpatterns = [
     path('exams/<int:pk>/', views.exam_detail, name='exam_detail'),
     path('exams/<int:pk>/process/', views.exam_process, name='exam_process'),
     path('exams/<int:pk>/analysis/', views.exam_analysis, name='exam_analysis'),
+    path('exams/<int:pk>/delete/', views.exam_delete, name='exam_delete'),
+    path('exams/<int:pk>/update-year/', views.exam_update_year, name='exam_update_year'),
 
     # Syllabus management
     path('syllabi/', views.syllabus_list, name='syllabus_list'),

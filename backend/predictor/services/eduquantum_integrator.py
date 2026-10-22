@@ -9,10 +9,10 @@ import json
 from django.db import transaction
 from django.utils import timezone
 
-from .models import ExamPaper, Topic, Prediction
-from .services.exam_analysis_service import ExamAnalysisService
-from .services.quantum_prediction_engine import QuantumPredictionEngine
-from .services.gemini_client import GeminiClient
+from ..models import ExamPaper, Topic, Prediction, Syllabus
+from .exam_analysis_service import ExamAnalysisService
+from .quantum_prediction_engine import QuantumPredictionEngine
+from .gemini_client import GeminiClient
 
 logger = logging.getLogger(__name__)
 

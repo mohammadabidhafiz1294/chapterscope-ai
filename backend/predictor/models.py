@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
-from django.core.validators import FileExtensionValidator
+from django.core.validators import FileExtensionValidator, MinValueValidator, MaxValueValidator
+from datetime import datetime
 import json
 
 class Syllabus(models.Model):
@@ -36,7 +37,10 @@ class ExamPaper(models.Model):
         upload_to='exams/',
         validators=[FileExtensionValidator(allowed_extensions=['pdf', 'doc', 'docx', 'txt'])]
     )
-    year = models.PositiveIntegerField()
+    year = models.PositiveIntegerField(
+        validators=[MinValueValidator(1900), MaxValueValidator(datetime.now().year + 10)],
+        help_text="Year of the exam paper"
+    )
     uploaded_at = models.DateTimeField(auto_now_add=True)
     processed = models.BooleanField(default=False)
     processed_at = models.DateTimeField(null=True, blank=True)

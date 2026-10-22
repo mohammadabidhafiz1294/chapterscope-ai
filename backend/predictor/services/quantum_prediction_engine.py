@@ -7,11 +7,11 @@ import numpy as np
 
 from qiskit import QuantumCircuit, transpile
 from qiskit_aer import AerSimulator
-from qiskit.primitives import Estimator
+from qiskit.primitives import StatevectorEstimator
 from qiskit.quantum_info import SparsePauliOp
-from qiskit.algorithms.minimum_eigensolvers import VQE
-from qiskit.algorithms.optimizers import COBYLA
 from qiskit.circuit.library import TwoLocal
+from scipy.optimize import minimize
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class QuantumPredictionEngine:
 
         # Initialize Qiskit components
         self.simulator = AerSimulator()
-        self.estimator = Estimator()
+        self.estimator = StatevectorEstimator()
 
         # VQE parameters
         self.ansatz = TwoLocal(
@@ -58,7 +58,7 @@ class QuantumPredictionEngine:
             reps=2
         )
 
-        self.optimizer = COBYLA(maxiter=self.max_iterations)
+        # Note: We use scipy.optimize.minimize instead of Qiskit's deprecated COBYLA optimizer
 
         logger.info(f"QuantumPredictionEngine initialized with {num_qubits} qubits")
 
@@ -83,31 +83,39 @@ class QuantumPredictionEngine:
             # Step 1: Construct Hamiltonian from topic relationships
             hamiltonian = self._construct_hamiltonian(topic_frequencies, topic_relationships)
 
-            # Step 2: Set up VQE algorithm
-            vqe = VQE(
-                estimator=self.estimator,
-                ansatz=self.ansatz,
-                optimizer=self.optimizer
+            # Step 2: Set up custom VQE optimization
+            logger.info("Running custom VQE optimization for topic prediction")
+            
+            # Initialize parameters
+            num_params = self.ansatz.num_parameters
+            initial_params = np.random.random(num_params) * 2 * np.pi
+
+            # Step 3: Run optimization using scipy
+            def objective_function(params):
+                return self._evaluate_energy(params, hamiltonian)
+
+            optimization_result = minimize(
+                objective_function,
+                initial_params,
+                method='COBYLA',
+                options={'maxiter': 1000}
             )
 
-            # Step 3: Run VQE optimization
-            logger.info("Running VQE optimization for topic prediction")
-            result = vqe.compute_minimum_eigenvalue(hamiltonian)
-
             # Step 4: Extract topic probabilities from optimal parameters
-            topic_probabilities = self._extract_topic_probabilities(result.optimal_parameters, topic_frequencies)
+            topic_probabilities = self._extract_topic_probabilities(optimization_result.x, topic_frequencies)
+            minimum_energy = optimization_result.fun
 
             # Step 5: Calculate prediction confidence
-            prediction_confidence = self._calculate_prediction_confidence(result, topic_probabilities)
+            prediction_confidence = self._calculate_prediction_confidence(optimization_result, topic_probabilities)
 
             execution_time = time.time() - start_time
 
-            logger.info(f"VQE optimization completed in {execution_time:.2f}s with energy {result.eigenvalue:.4f}")
+            logger.info(f"VQE optimization completed in {execution_time:.2f}s with energy {minimum_energy:.4f}")
 
             return QuantumPredictionResult(
                 success=True,
-                optimal_parameters=result.optimal_parameters,
-                minimum_energy=float(result.eigenvalue),
+                optimal_parameters=optimization_result.x,
+                minimum_energy=float(minimum_energy),
                 topic_probabilities=topic_probabilities,
                 prediction_confidence=prediction_confidence,
                 execution_time=execution_time
@@ -187,6 +195,27 @@ class QuantumPredictionEngine:
 
         return hamiltonian
 
+    def _evaluate_energy(self, parameters: np.ndarray, hamiltonian: SparsePauliOp) -> float:
+        """Evaluate the energy expectation value for given parameters."""
+        try:
+            # Bind parameters to the ansatz
+            bound_circuit = self.ansatz.bind_parameters(parameters)
+            
+            # Use StatevectorEstimator with new API format
+            # The new API expects PUB (Primitive Unified Blocks) format
+            pub = (bound_circuit, hamiltonian)
+            job = self.estimator.run([pub])
+            result = job.result()
+            
+            # Extract the expectation value from the first PUB result
+            energy = result[0].data.evs[0]
+            return float(energy.real)
+            
+        except Exception as e:
+            logger.warning(f"Error evaluating energy: {e}")
+            # Return a high energy value as penalty
+            return 1000.0
+
     def _extract_topic_probabilities(self, optimal_parameters: np.ndarray,
                                    topic_frequencies: Dict[str, float]) -> Dict[str, float]:
         """Extract topic probabilities from VQE optimal parameters."""
@@ -235,11 +264,11 @@ class QuantumPredictionEngine:
 
         return topic_probabilities
 
-    def _calculate_prediction_confidence(self, vqe_result: Any,
+    def _calculate_prediction_confidence(self, optimization_result: Any,
                                        topic_probabilities: Dict[str, float]) -> float:
         """Calculate confidence score for the quantum prediction."""
-        # Base confidence on VQE convergence and probability distribution
-        convergence_confidence = 1.0 / (1.0 + abs(vqe_result.eigenvalue))  # Lower energy = higher confidence
+        # Base confidence on optimization convergence and probability distribution
+        convergence_confidence = 1.0 / (1.0 + abs(optimization_result.fun))  # Lower energy = higher confidence
 
         # Distribution confidence: higher when probabilities are well-distributed
         probabilities = list(topic_probabilities.values())
@@ -290,20 +319,28 @@ class QuantumPredictionEngine:
             coeffs = [term[1] for term in hamiltonian_terms]
             hamiltonian = SparsePauliOp(pauli_list, coeffs)
 
-            # Run VQE
-            vqe = VQE(
-                estimator=self.estimator,
-                ansatz=self.ansatz,
-                optimizer=self.optimizer
+            # Run custom VQE optimization using scipy
+            def objective_function(params):
+                return self._evaluate_energy(params, hamiltonian)
+            
+            # Initial parameters
+            num_params = self.ansatz.num_parameters
+            initial_params = np.random.uniform(0, 2*np.pi, num_params)
+            
+            # Optimize using scipy
+            optimization_result = minimize(
+                objective_function,
+                initial_params,
+                method='COBYLA',
+                options={'maxiter': self.max_iterations}
             )
 
-            result = vqe.compute_minimum_eigenvalue(hamiltonian)
-
-            # Extract optimized weights
+            # Extract optimized weights using optimal parameters
+            optimal_params = optimization_result.x
             optimized_weights = {}
             for i, topic in enumerate(topics[:self.num_qubits]):
                 # Use parameter values to modulate weights
-                param_value = result.optimal_parameters[i] if i < len(result.optimal_parameters) else 0.0
+                param_value = optimal_params[i] if i < len(optimal_params) else 0.0
                 optimized_weight = topic_weights[topic] * (1.0 + param_value / np.pi)
                 optimized_weights[topic] = max(0.0, optimized_weight)
 

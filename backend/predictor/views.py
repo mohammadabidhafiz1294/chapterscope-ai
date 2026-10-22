@@ -207,6 +207,99 @@ def exam_detail(request, pk):
     return render(request, 'predictor/exam_detail.html', context)
 
 
+@login_required
+def exam_delete(request, pk):
+    """Delete an exam paper with confirmation."""
+    exam_paper = get_object_or_404(ExamPaper, pk=pk, user=request.user)
+    
+    if request.method == 'POST':
+        try:
+            # Store the title for the success message
+            exam_title = exam_paper.title
+            
+            # Delete the physical file if it exists
+            if exam_paper.file:
+                if hasattr(exam_paper.file, 'path'):
+                    import os
+                    if os.path.exists(exam_paper.file.path):
+                        os.remove(exam_paper.file.path)
+            
+            # Delete related topics and predictions
+            exam_paper.topics.all().delete()
+            exam_paper.predictions.all().delete()
+            
+            # Delete the exam paper
+            exam_paper.delete()
+            
+            messages.success(request, f'Exam paper "{exam_title}" has been successfully deleted.')
+            return redirect('predictor:exam_list')
+            
+        except Exception as e:
+            logger.error(f"Error deleting exam paper {pk}: {str(e)}")
+            messages.error(request, 'An error occurred while deleting the exam paper. Please try again.')
+            return redirect('predictor:exam_detail', pk=pk)
+    
+    # GET request - show confirmation page
+    context = {
+        'exam_paper': exam_paper,
+        'delete_type': 'exam paper'
+    }
+    return render(request, 'predictor/confirm_delete.html', context)
+
+
+@login_required 
+def exam_update_year(request, pk):
+    """Update the year of an exam paper."""
+    exam_paper = get_object_or_404(ExamPaper, pk=pk, user=request.user)
+    
+    if request.method == 'POST':
+        try:
+            new_year = request.POST.get('year')
+            if not new_year:
+                messages.error(request, 'Year is required.')
+                return redirect('predictor:exam_detail', pk=pk)
+            
+            # Validate year
+            try:
+                new_year = int(new_year)
+                if new_year < 1900 or new_year > 2100:
+                    messages.error(request, 'Please enter a valid year between 1900 and 2100.')
+                    return redirect('predictor:exam_detail', pk=pk)
+            except ValueError:
+                messages.error(request, 'Please enter a valid year.')
+                return redirect('predictor:exam_detail', pk=pk)
+            
+            # Check for unique constraint
+            existing_exam = ExamPaper.objects.filter(
+                user=request.user, 
+                title=exam_paper.title, 
+                year=new_year
+            ).exclude(pk=pk).first()
+            
+            if existing_exam:
+                messages.error(request, f'An exam paper with the title "{exam_paper.title}" already exists for year {new_year}.')
+                return redirect('predictor:exam_detail', pk=pk)
+            
+            # Update the year
+            old_year = exam_paper.year
+            exam_paper.year = new_year
+            exam_paper.save()
+            
+            messages.success(request, f'Exam paper year updated from {old_year} to {new_year}.')
+            return redirect('predictor:exam_detail', pk=pk)
+            
+        except Exception as e:
+            logger.error(f"Error updating exam paper year {pk}: {str(e)}")
+            messages.error(request, 'An error occurred while updating the year. Please try again.')
+            return redirect('predictor:exam_detail', pk=pk)
+    
+    # GET request - show update form
+    context = {
+        'exam_paper': exam_paper,
+    }
+    return render(request, 'predictor/update_year.html', context)
+
+
 # Syllabus Views
 @login_required
 def syllabus_list(request):

@@ -10,22 +10,24 @@ from src.config import service_logger, settings
 # Import Qiskit components (will be installed)
 try:
     from qiskit import QuantumCircuit
-    from qiskit.algorithms.minimum_eigensolvers import VQE
-    from qiskit.algorithms.optimizers import COBYLA
+    # Note: VQE and COBYLA from qiskit.algorithms are deprecated in Qiskit 2.x
+    # We'll implement custom VQE using StatevectorEstimator and scipy optimization
     from qiskit.primitives import StatevectorEstimator
     from qiskit.quantum_info import SparsePauliOp
     from qiskit_aer import AerSimulator
+    from qiskit.circuit.library import TwoLocal
+    from scipy.optimize import minimize
+    import numpy as np
 
     QISKIT_AVAILABLE = True
-    service_logger.info("Qiskit available for quantum predictions")
+    service_logger.info("Qiskit available for quantum predictions (using updated API)")
 except ImportError as e:
     # Define dummy classes to avoid import errors
     QuantumCircuit = None
-    VQE = None
-    COBYLA = None
     StatevectorEstimator = None
     SparsePauliOp = None
     AerSimulator = None
+    TwoLocal = None
 
     QISKIT_AVAILABLE = False
     service_logger.warning(
@@ -223,18 +225,36 @@ class VQEPredictor:
             for i in range(num_qubits):
                 ansatz.ry(np.pi / 3 * (layer + 1), i)
 
-        # Setup VQE with StatevectorEstimator
-        optimizer = COBYLA(maxiter=self.max_iterations)
+        # Setup custom VQE implementation using StatevectorEstimator and scipy
         estimator = StatevectorEstimator()
 
-        vqe = VQE(estimator, ansatz, optimizer)
+        def objective_function(params):
+            """Objective function for VQE optimization."""
+            try:
+                bound_circuit = ansatz.bind_parameters(params)
+                pub = (bound_circuit, hamiltonian)
+                job = estimator.run([pub])
+                result = job.result()
+                energy = result[0].data.evs[0]
+                return float(energy.real)
+            except Exception as e:
+                service_logger.warning(f"Error in VQE objective function: {e}")
+                return 1000.0  # High penalty for errors
 
-        # Run VQE
-        service_logger.debug(f"Running VQE for {topic} with {num_qubits} qubits")
-        result = vqe.compute_minimum_eigenvalue(hamiltonian)
+        # Run custom VQE using scipy optimization
+        service_logger.debug(f"Running custom VQE for {topic} with {num_qubits} qubits")
+        initial_params = np.random.uniform(0, 2*np.pi, ansatz.num_parameters)
+        
+        result = minimize(
+            objective_function,
+            initial_params,
+            method='COBYLA',
+            options={'maxiter': self.max_iterations}
+        )
 
-        # Convert eigenvalue to importance score (0-1 range)
-        importance = (result.eigenvalue.real + 2.0) / 4.0  # Scale to 0-1 range
+        # Convert minimum energy to importance score (0-1 range)
+        eigenvalue = result.fun
+        importance = (eigenvalue + 2.0) / 4.0  # Scale to 0-1 range
         importance = max(0.0, min(1.0, importance))
 
         service_logger.info(
