@@ -92,37 +92,6 @@ class Migration(migrations.Migration):
                 to="predictor.exampaper",
             ),
         ),
-        migrations.AddConstraint(
-            model_name="prediction",
-            constraint=models.CheckConstraint(
-                check=models.Q(
-                    models.Q(("exam_paper__isnull", True), ("syllabus__isnull", False)),
-                    models.Q(("exam_paper__isnull", False), ("syllabus__isnull", True)),
-                    _connector="OR",
-                ),
-                name="prediction_source_constraint",
-            ),
-        ),
-        migrations.AddConstraint(
-            model_name="topic",
-            constraint=models.CheckConstraint(
-                check=models.Q(
-                    models.Q(("exam_paper__isnull", True), ("syllabus__isnull", False)),
-                    models.Q(("exam_paper__isnull", False), ("syllabus__isnull", True)),
-                    _connector="OR",
-                ),
-                name="topic_source_constraint",
-            ),
-        ),
-        migrations.AddField(
-            model_name="syllabus",
-            name="user",
-            field=models.ForeignKey(
-                on_delete=django.db.models.deletion.CASCADE,
-                related_name="syllabi",
-                to=settings.AUTH_USER_MODEL,
-            ),
-        ),
         migrations.AddField(
             model_name="prediction",
             name="syllabus",
@@ -143,6 +112,37 @@ class Migration(migrations.Migration):
                 on_delete=django.db.models.deletion.CASCADE,
                 related_name="topics",
                 to="predictor.syllabus",
+            ),
+        ),
+        migrations.AddField(
+            model_name="syllabus",
+            name="user",
+            field=models.ForeignKey(
+                on_delete=django.db.models.deletion.CASCADE,
+                related_name="syllabi",
+                to=settings.AUTH_USER_MODEL,
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="prediction",
+            constraint=models.CheckConstraint(
+                check=models.Q(
+                    models.Q(("exam_paper__isnull", True), ("syllabus__isnull", False)),
+                    models.Q(("exam_paper__isnull", False), ("syllabus__isnull", True)),
+                    _connector="OR",
+                ),
+                name="prediction_source_constraint",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="topic",
+            constraint=models.CheckConstraint(
+                check=models.Q(
+                    models.Q(("exam_paper__isnull", True), ("syllabus__isnull", False)),
+                    models.Q(("exam_paper__isnull", False), ("syllabus__isnull", True)),
+                    _connector="OR",
+                ),
+                name="topic_source_constraint",
             ),
         ),
         migrations.AlterUniqueTogether(

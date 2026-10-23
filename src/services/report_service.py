@@ -71,7 +71,7 @@ class ReportService:
                 created_at=report.created_at,
                 updated_at=report.updated_at,
                 created_by=report.created_by,
-                metadata=report.metadata
+                report_metadata=report.metadata
             )
             db_session.add(db_report)
             db_session.commit()
@@ -103,7 +103,7 @@ class ReportService:
                     created_at=db_report.created_at,
                     updated_at=db_report.updated_at,
                     created_by=db_report.created_by,
-                    metadata=db_report.metadata
+                    metadata=db_report.report_metadata
                 )
                 service_logger.debug("Report retrieved from database", report_id=report_id)
                 return report
@@ -116,8 +116,13 @@ class ReportService:
         finally:
             db_session.close()
 
-    def get_all_reports(self, page: int = 1, per_page: int = 10,
-                       status_filter: Optional[str] = None) -> Dict[str, Any]:
+    def get_all_reports(
+        self,
+        page: int = 1,
+        per_page: int = 10,
+        status_filter: Optional[str] = None,
+        prediction_year: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Get all reports with pagination and filtering."""
         db_session = get_db_session()
         try:
@@ -126,6 +131,10 @@ class ReportService:
             # Apply status filter
             if status_filter:
                 query = query.filter(DBReport.status == status_filter)
+
+            # Apply prediction year filter
+            if prediction_year is not None:
+                query = query.filter(DBReport.prediction_year == prediction_year)
 
             # Get total count
             total = query.count()
@@ -151,7 +160,7 @@ class ReportService:
                     created_at=db_report.created_at,
                     updated_at=db_report.updated_at,
                     created_by=db_report.created_by,
-                    metadata=db_report.metadata
+                    metadata=db_report.report_metadata
                 )
                 reports.append(report)
 
@@ -159,7 +168,8 @@ class ReportService:
 
             service_logger.debug("Reports retrieved from database",
                                total=total, page=page, per_page=per_page,
-                               status_filter=status_filter)
+                               status_filter=status_filter,
+                               prediction_year=prediction_year)
 
             return {
                 "items": reports,
@@ -218,7 +228,7 @@ class ReportService:
                 created_at=db_report.created_at,
                 updated_at=db_report.updated_at,
                 created_by=db_report.created_by,
-                metadata=db_report.metadata
+                metadata=db_report.report_metadata
             )
 
             service_logger.info("Report updated successfully in database", report_id=report_id)
@@ -286,7 +296,7 @@ class ReportService:
                 created_at=db_report.created_at,
                 updated_at=db_report.updated_at,
                 created_by=db_report.created_by,
-                metadata=db_report.metadata
+                metadata=db_report.report_metadata
             )
 
             # Load historical data
@@ -538,7 +548,7 @@ class ReportService:
                 created_at=db_report.created_at,
                 updated_at=db_report.updated_at,
                 created_by=db_report.created_by,
-                metadata=db_report.metadata
+                metadata=db_report.report_metadata
             )
 
             # Get data and visualizations from database
@@ -708,7 +718,7 @@ class ReportService:
                 created_at=db_report.created_at,
                 updated_at=db_report.updated_at,
                 created_by=db_report.created_by,
-                metadata=db_report.metadata
+                metadata=db_report.report_metadata
             )
 
             # Get data from database

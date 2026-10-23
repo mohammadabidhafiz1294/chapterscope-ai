@@ -2,6 +2,11 @@
 Custom middleware for handling security headers in development environment.
 This middleware helps resolve Cross-Origin-Opener-Policy and other CORS-related issues.
 """
+import logging
+import uuid
+
+
+logger = logging.getLogger("predictor.request")
 
 
 class SecurityHeadersMiddleware:
@@ -14,7 +19,16 @@ class SecurityHeadersMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        request.request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
         response = self.get_response(request)
+        response["X-Request-ID"] = request.request_id
+        logger.info(
+            "request_completed request_id=%s method=%s path=%s status=%s",
+            request.request_id,
+            request.method,
+            request.path,
+            response.status_code,
+        )
         
         # Only apply these headers in development (when DEBUG=True)
         from django.conf import settings

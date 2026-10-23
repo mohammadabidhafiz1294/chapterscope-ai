@@ -10,22 +10,103 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
+import os
+import sys
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
+from django.core.management.utils import get_random_secret_key
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load local development settings from backend/.env when python-dotenv is
+# available. Real environment variables always take precedence.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(BASE_DIR / ".env")
+except ImportError:  # pragma: no cover - optional dependency
+    pass
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean environment variable.
+
+    Unset or empty values fall back to the default, so a blank line in
+    ``backend/.env`` never silently disables a secure-by-default flag.
+    """
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_list(name: str, default: str = "") -> list:
+    """Read a comma-separated environment variable."""
+    value = os.getenv(name, default)
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def env_int(name: str, default: int) -> int:
+    """Read an integer environment variable, falling back to a default."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise ImproperlyConfigured(
+            f"Environment variable {name} must be an integer, got {raw!r}"
+        ) from exc
+
+
+def env_float(name: str, default: float) -> float:
+    """Read a float environment variable, falling back to a default."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError as exc:
+        raise ImproperlyConfigured(
+            f"Environment variable {name} must be a number, got {raw!r}"
+        ) from exc
+
+
+# Values shipped in .env.example templates; never accepted in production.
+_PLACEHOLDER_SECRET_KEYS = {
+    "change-me",
+    "changeme",
+    "your-secret-key-here-change-this-in-production",
+    "django-insecure-change-me",
+}
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
+DEBUG = env_bool("DEBUG", False)
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-%7ad7dv4odr8%z6b+d54cm%ebt4u6)oyf%q%fc_1bs&&81v*x%'
+# In development a random per-process key is generated when SECRET_KEY is
+# unset. Set SECRET_KEY in the environment to keep sessions across restarts.
+SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
+if not SECRET_KEY or SECRET_KEY.lower() in _PLACEHOLDER_SECRET_KEYS:
+    if DEBUG:
+        SECRET_KEY = get_random_secret_key()
+    else:
+        raise ImproperlyConfigured(
+            "SECRET_KEY is not set (or is still a placeholder). "
+            "Provide a real SECRET_KEY via the environment."
+        )
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
+if not DEBUG and not ALLOWED_HOSTS:
+    raise ImproperlyConfigured(
+        "ALLOWED_HOSTS is empty. Set ALLOWED_HOSTS in the environment "
+        "when DEBUG=False."
+    )
 
 
 # Application definition
@@ -81,31 +162,29 @@ WSGI_APPLICATION = 'eduquantum.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
-# Database
-# https://docs.djangoproject.com/en/4.2/ref/settings/#databases
+from .db_url import database_from_url  # noqa: E402  (Django-settings file)
 
-# MySQL Configuration (Docker container)
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'eduquantum_db',
-        'USER': 'eduquantum_user',
-        'PASSWORD': 'eduquantum_pass123',
-        'HOST': '127.0.0.1',
-        'PORT': '3307',
-        'OPTIONS': {
-            'charset': 'utf8mb4',
-        },
+# DATABASE_URL accepts sqlite, postgres/postgresql and mysql schemes plus
+# driver query options (e.g. ?sslmode=require for Supabase). When unset,
+# development falls back to SQLite at backend/db.sqlite3.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+if not DEBUG and not DATABASE_URL:
+    raise ImproperlyConfigured(
+        "DATABASE_URL is required when DEBUG=False. "
+        "Set it to a PostgreSQL URL for production."
+    )
+
+if DATABASE_URL:
+    DATABASES = {"default": database_from_url(DATABASE_URL, base_dir=str(BASE_DIR))}
+else:
+    # Development / test default. Set DATABASE_URL for PostgreSQL or MySQL.
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
-
-# SQLite Configuration (for development - uncomment when needed)
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.sqlite3',
-#         'NAME': BASE_DIR / 'db.sqlite3',
-#     }
-# }
 
 
 # Password validation
@@ -151,6 +230,7 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST Framework Configuration
+_TESTING = 'test' in sys.argv
 REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
@@ -161,31 +241,243 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FormParser',
     ],
+    # Deny-by-default: user-owned data requires authentication. Endpoints
+    # that must be anonymous (health, login, register) are opt-in per view
+    # with an explicit permission class.
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.AllowAny',
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '10000/minute' if _TESTING else '30/minute',
+        'user': '10000/minute' if _TESTING else '120/minute',
+    },
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+        'rest_framework.authentication.BasicAuthentication',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
 }
 
 # EduQuantum Specific Settings
-import os
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'your-gemini-api-key-here')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
 QISKIT_BACKEND = os.getenv('QISKIT_BACKEND', 'aer_simulator')
-MAX_FILE_SIZE = int(os.getenv('MAX_FILE_SIZE', 10 * 1024 * 1024))  # 10MB
+MAX_FILE_SIZE = env_int('MAX_FILE_SIZE', 10 * 1024 * 1024)  # 10MB default
 ALLOWED_FILE_TYPES = ['pdf', 'doc', 'docx', 'txt']
+
+# Phase 3: source-traceable extraction (syllabus / exam-paper processing).
+# All limits are defense-in-depth; MAX_FILE_SIZE above is the upload gate.
+EXTRACTION_MAX_PAGES = env_int('EXTRACTION_MAX_PAGES', 300)
+EXTRACTION_MAX_CHARS = env_int('EXTRACTION_MAX_CHARS', 2_000_000)
+EXTRACTION_MAX_DOCX_UNCOMPRESSED = env_int(
+    'EXTRACTION_MAX_DOCX_UNCOMPRESSED', 50 * 1024 * 1024
+)
+# A PDF page (or whole-document chunk) with fewer non-whitespace characters
+# than this is flagged as low-text (likely scanned / image-only).
+EXTRACTION_OCR_MIN_CHARS = env_int('EXTRACTION_OCR_MIN_CHARS', 40)
+# Below this confidence an OCR result (or a question derived from it) is
+# marked NEEDS_REVIEW rather than trusted.
+EXTRACTION_OCR_MIN_CONFIDENCE = env_float('EXTRACTION_OCR_MIN_CONFIDENCE', 0.6)
+# Rule-derived questions below this confidence are flagged for review.
+EXTRACTION_REVIEW_CONFIDENCE = env_float('EXTRACTION_REVIEW_CONFIDENCE', 0.7)
+# A PROCESSING run older than this (minutes) is treated as interrupted and
+# can be retried.
+EXTRACTION_STALE_MINUTES = env_int('EXTRACTION_STALE_MINUTES', 15)
+# LLM-assisted structured parsing fallback. Only effective when
+# GEMINI_API_KEY is configured; never required for the core path.
+EXTRACTION_ENABLE_LLM_FALLBACK = env_bool('EXTRACTION_ENABLE_LLM_FALLBACK', True)
+# OCR engine selector: 'auto' (use if available, else ocr_required),
+# 'none' (always ocr_required), or 'tesseract' (require the Tesseract engine).
+OCR_ENGINE = os.getenv('OCR_ENGINE', 'auto').strip().lower()
+
+# Phase 4: embeddings + vector retrieval (RAG).
+#
+# EMBEDDING_DIMENSION is schema-level: the `vector(N)` column in migration
+# 0013 is created with this value. Changing it requires a new migration and a
+# reindex; the RAG services compare this setting against both the model field
+# and the actual provider response and refuse to write a mismatched vector.
+#
+# Verified against the official docs (June 2025 / April 2026 updates):
+#   gemini-embedding-001 -> default 3072, Matryoshka dims 128-3072,
+#   Google recommends 768 / 1536 / 3072, 2048-token input, text-only.
+#   Vectors truncated below 3072 must be manually L2-normalized.
+EMBEDDING_ENABLED = env_bool('EMBEDDING_ENABLED', True)
+EMBEDDING_PROVIDER = os.getenv('EMBEDDING_PROVIDER', 'gemini').strip().lower()
+EMBEDDING_MODEL = (
+    os.getenv('EMBEDDING_MODEL', 'gemini-embedding-001').strip()
+)
+EMBEDDING_DIMENSION = env_int('EMBEDDING_DIMENSION', 768)
+# Task types accepted by the Gemini embeddings API (EmbedContentConfig).
+EMBEDDING_TASK_TYPE_DOCUMENT = (
+    os.getenv('EMBEDDING_TASK_TYPE_DOCUMENT', 'RETRIEVAL_DOCUMENT').strip()
+)
+EMBEDDING_TASK_TYPE_QUERY = (
+    os.getenv('EMBEDDING_TASK_TYPE_QUERY', 'RETRIEVAL_QUERY').strip()
+)
+EMBEDDING_BATCH_SIZE = env_int('EMBEDDING_BATCH_SIZE', 16)
+EMBEDDING_MAX_TEXT_CHARS = env_int('EMBEDDING_MAX_TEXT_CHARS', 8000)
+EMBEDDING_TIMEOUT_SECONDS = env_float('EMBEDDING_TIMEOUT_SECONDS', 10.0)
+EMBEDDING_MAX_RETRIES = env_int('EMBEDDING_MAX_RETRIES', 2)
+# Embed extracted sources synchronously when a processing run finishes.
+# Failures only mark chunks FAILED; they never fail the extraction run.
+EMBEDDING_AUTO_INDEX = env_bool('EMBEDDING_AUTO_INDEX', True)
+
+# Retrieval limits. Deterministic: no unbounded scans, no per-query tuning.
+RAG_TOP_K = env_int('RAG_TOP_K', 8)
+RAG_MAX_TOP_K = env_int('RAG_MAX_TOP_K', 20)
+# Dense candidates fetched before keyword fusion/rrank re-ordering.
+RAG_CANDIDATE_MULTIPLIER = env_int('RAG_CANDIDATE_MULTIPLIER', 3)
+RAG_FUSION_ENABLED = env_bool('RAG_FUSION_ENABLED', True)
+RAG_RRF_K = env_int('RAG_RRF_K', 60)
+# Cosine similarity (1 - distance) floor; results at/below are dropped.
+RAG_MIN_SCORE = env_float('RAG_MIN_SCORE', 0.0)
+RAG_MAX_QUERY_CHARS = env_int('RAG_MAX_QUERY_CHARS', 500)
+RAG_SNIPPET_CHARS = env_int('RAG_SNIPPET_CHARS', 400)
+RAG_QUERY_TIMEOUT_SECONDS = env_float('RAG_QUERY_TIMEOUT_SECONDS', 5.0)
+
+# --- Phase 5: course analytics --------------------------------------------
+# Weighted allocation for multi-topic questions: each secondary counts W of a
+# primary question and every question's weights still sum to 1.0. Only used
+# with weighting="weighted"; the default "primary" mode ignores secondaries.
+ANALYTICS_SECONDARY_WEIGHT = env_float('ANALYTICS_SECONDARY_WEIGHT', 0.5)
+# Distinct most-recent years that make up the "recent frequency" window.
+ANALYTICS_RECENT_YEARS = env_int('ANALYTICS_RECENT_YEARS', 3)
+# Paper-prevalence slope (per year) that maps to the neutral 0.5 trend term.
+ANALYTICS_TREND_CAP = env_float('ANALYTICS_TREND_CAP', 0.25)
+# Transparent ranking weights, normalised by their sum inside the score.
+ANALYTICS_WEIGHT_FREQUENCY = env_float('ANALYTICS_WEIGHT_FREQUENCY', 0.35)
+ANALYTICS_WEIGHT_RECENCY = env_float('ANALYTICS_WEIGHT_RECENCY', 0.25)
+ANALYTICS_WEIGHT_TREND = env_float('ANALYTICS_WEIGHT_TREND', 0.2)
+ANALYTICS_WEIGHT_SYLLABUS = env_float('ANALYTICS_WEIGHT_SYLLABUS', 0.2)
+# Response bounds (payload size).
+ANALYTICS_TREND_TOPICS = env_int('ANALYTICS_TREND_TOPICS', 8)
+ANALYTICS_MAX_TOPICS = env_int('ANALYTICS_MAX_TOPICS', 20)
+
+# Phase 5 label proposals. The LLM is optional: with no key (or disabled) the
+# deterministic alias/rule path still works and proposals return 503 only when
+# explicitly requested via use_llm=true.
+TOPIC_LLM_ENABLED = env_bool('TOPIC_LLM_ENABLED', True)
+TOPIC_LLM_MODEL = os.getenv('TOPIC_LLM_MODEL', 'gemini-2.5-flash').strip()
+TOPIC_LLM_TIMEOUT_SECONDS = env_float('TOPIC_LLM_TIMEOUT_SECONDS', 20.0)
+# Proposals at/below this confidence, or that are ambiguous, are stored as
+# NEEDS_REVIEW instead of being treated as settled facts.
+TOPIC_REVIEW_MIN_CONFIDENCE = env_float('TOPIC_REVIEW_MIN_CONFIDENCE', 0.75)
+# Ceiling on how many questions one proposal request may process.
+TOPIC_LLM_MAX_QUESTIONS = env_int('TOPIC_LLM_MAX_QUESTIONS', 20)
+
+# --- Phase 6: source-grounded notebook chat ---------------------------------
+# LangChain chat-model pipeline (Django `predictor.services.chat`). The model
+# is optional in the same sense as TOPIC_LLM_*: disabled, or with no
+# GEMINI_API_KEY, chat POSTs fail fast with 503 chat_unavailable before
+# anything is written. Tests inject a fake model and never hit a provider.
+CHAT_LLM_ENABLED = env_bool('CHAT_LLM_ENABLED', True)
+# Implemented provider: 'google_genai' (ChatGoogleGenerativeAI). Anything else
+# fails with 503 chat_unavailable + a hint naming the supported value.
+CHAT_LLM_PROVIDER = os.getenv('CHAT_LLM_PROVIDER', 'google_genai').strip().lower()
+CHAT_LLM_MODEL = os.getenv('CHAT_LLM_MODEL', 'gemini-2.5-flash').strip()
+CHAT_LLM_TEMPERATURE = env_float('CHAT_LLM_TEMPERATURE', 0.2)
+CHAT_LLM_MAX_OUTPUT_TOKENS = env_int('CHAT_LLM_MAX_OUTPUT_TOKENS', 1024)
+CHAT_LLM_TIMEOUT_SECONDS = env_float('CHAT_LLM_TIMEOUT_SECONDS', 20.0)
+
+# Request/response bounds (defense-in-depth; every limit is enforced in code).
+CHAT_MAX_MESSAGE_CHARS = env_int('CHAT_MAX_MESSAGE_CHARS', 4000)
+CHAT_MAX_ANSWER_CHARS = env_int('CHAT_MAX_ANSWER_CHARS', 4000)
+# Recent USER/ASSISTANT turns replayed as prompt context (oldest dropped).
+CHAT_HISTORY_MESSAGES = env_int('CHAT_HISTORY_MESSAGES', 10)
+CHAT_HISTORY_CHARS = env_int('CHAT_HISTORY_CHARS', 4000)
+# Total budget for retrieved source blocks in the prompt.
+CHAT_CONTEXT_CHARS = env_int('CHAT_CONTEXT_CHARS', 6000)
+
+# Retrieval settings for the chat query (clamped against the RAG limits).
+CHAT_RETRIEVAL_TOP_K = env_int('CHAT_RETRIEVAL_TOP_K', 5)
+CHAT_RETRIEVAL_MIN_SCORE = env_float('CHAT_RETRIEVAL_MIN_SCORE', 0.0)
+CHAT_RETRIEVAL_KEYWORD = env_bool('CHAT_RETRIEVAL_KEYWORD', True)
+# User messages are bounded by CHAT_MAX_MESSAGE_CHARS but may still exceed
+# RAG_MAX_QUERY_CHARS; the retrieval query is deterministically truncated.
+CHAT_RETRIEVAL_QUERY_CHARS = env_int('CHAT_RETRIEVAL_QUERY_CHARS', 500)
+# Server-side citation filter: only retrieved source_keys survive.
+CHAT_MAX_CITATIONS = env_int('CHAT_MAX_CITATIONS', 5)
+
+# --- Phase 7: practice-question generation --------------------------------
+# Same fail-fast shape as the chat pipeline: disabled, or with no
+# GEMINI_API_KEY, generation POSTs fail with 503 generation_unavailable
+# before anything is written. Tests inject a fake model, never a provider.
+GENERATION_LLM_ENABLED = env_bool('GENERATION_LLM_ENABLED', True)
+GENERATION_LLM_PROVIDER = os.getenv(
+    'GENERATION_LLM_PROVIDER', 'google_genai'
+).strip().lower()
+GENERATION_LLM_MODEL = os.getenv(
+    'GENERATION_LLM_MODEL', 'gemini-2.5-flash'
+).strip()
+GENERATION_LLM_TEMPERATURE = env_float('GENERATION_LLM_TEMPERATURE', 0.4)
+GENERATION_LLM_MAX_OUTPUT_TOKENS = env_int(
+    'GENERATION_LLM_MAX_OUTPUT_TOKENS', 4096
+)
+GENERATION_LLM_TIMEOUT_SECONDS = env_float(
+    'GENERATION_LLM_TIMEOUT_SECONDS', 30.0
+)
+
+# Request/response bounds (defense-in-depth; enforced in code).
+GENERATION_MAX_QUESTIONS = env_int('GENERATION_MAX_QUESTIONS', 20)
+GENERATION_MAX_SOURCE_REFS = env_int('GENERATION_MAX_SOURCE_REFS', 8)
+# Context budget for the two labelled blocks in the prompt.
+GENERATION_CONTEXT_CHARS = env_int('GENERATION_CONTEXT_CHARS', 6000)
+# Retries on a schema-invalid model response before failing 502.
+GENERATION_SCHEMA_RETRIES = env_int('GENERATION_SCHEMA_RETRIES', 1)
+# Automatic validation thresholds.
+GENERATION_DUPLICATE_THRESHOLD = env_float(
+    'GENERATION_DUPLICATE_THRESHOLD', 0.85
+)
+GENERATION_MIN_CONFIDENCE = env_float('GENERATION_MIN_CONFIDENCE', 0.6)
+# SymPy recompute tolerance for numerical answers.
+GENERATION_NUMERIC_TOLERANCE = env_float(
+    'GENERATION_NUMERIC_TOLERANCE', 1e-6
+)
 
 # Media files
 MEDIA_URL = '/media/'
+
+# HTTPS / cookie security. Defaults are safe in production (DEBUG=False)
+# and relaxed for local development; override per environment.
+SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", not DEBUG)
+SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", not DEBUG)
+CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", not DEBUG)
+SECURE_HSTS_SECONDS = env_int("SECURE_HSTS_SECONDS", 0)
+SECURE_CONTENT_TYPE_NOSNIFF = env_bool("SECURE_CONTENT_TYPE_NOSNIFF", True)
+X_FRAME_OPTIONS = "DENY" if not DEBUG else "SAMEORIGIN"
+SECURE_REFERRER_POLICY = (
+    os.getenv("SECURE_REFERRER_POLICY", "same-origin").strip() or "same-origin"
+)
+# Set SECURE_PROXY_SSL_HEADER=true when running behind TLS terminators
+# (Supabase, nginx) that set X-Forwarded-Proto.
+if env_bool("SECURE_PROXY_SSL_HEADER", False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [
+# Origins come from CORS_ALLOWED_ORIGINS (comma-separated). Development
+# falls back to common localhost origins; production (DEBUG=False) is
+# default-deny and requires the variable to be set explicitly.
+_DEV_CORS_ORIGINS = [
     "http://localhost:3000",  # React development server
     "http://127.0.0.1:3000",  # Alternative localhost
-    "http://localhost:8001",  # Django development server
-    "http://127.0.0.1:8001",  # Alternative localhost for Django
+    "http://localhost:8001",  # FastAPI development server
+    "http://127.0.0.1:8001",  # Alternative localhost for FastAPI
 ]
+CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
+    ",".join(_DEV_CORS_ORIGINS) if DEBUG else "",
+)
+# Regex-based origins are development-only (see DEBUG block below);
+# production matches only the explicit list above.
+CORS_ALLOWED_ORIGIN_REGEXES = []
+
+# Trusted origins for non-HTTPS requests behind proxies (CSRF checks).
+CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
 CORS_ALLOW_CREDENTIALS = True
 
@@ -211,13 +503,9 @@ CORS_ALLOW_HEADERS = [
 ]
 
 # Security Headers for Cross-Origin Policy
-# These settings help resolve Cross-Origin-Opener-Policy warnings in development
-SECURE_CROSS_ORIGIN_OPENER_POLICY = None  # Disable COOP for localhost development
+# Django's secure defaults stay on in production; development relaxations
+# live inside the DEBUG block below.
 CORS_ALLOW_ALL_ORIGINS = False  # Keep this False for security
-CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^http://localhost:\d+$",  # Allow any localhost port
-    r"^http://127\.0\.0\.1:\d+$",  # Allow any 127.0.0.1 port
-]
 
 # Additional CORS settings to prevent cross-origin issues
 CORS_EXPOSE_HEADERS = [
@@ -227,28 +515,30 @@ CORS_EXPOSE_HEADERS = [
 
 # For development, we'll be more permissive with cross-origin policies
 if DEBUG:
-    # In development, allow more permissive cross-origin settings
-    # Note: CORS_REPLACE_HTTPS_REFERER has been removed in newer django-cors-headers
+    # In development, allow more permissive cross-origin settings.
+    # All of this is skipped when DEBUG=False.
     SECURE_REFERRER_POLICY = "unsafe-url"
-    
-    # Additional development-specific CORS settings
-    CORS_PREFLIGHT_MAX_AGE = 86400  # 24 hours - cache preflight requests
-    
-    # Disable strict security policies for localhost development
+    SECURE_SSL_REDIRECT = False
+    SESSION_COOKIE_SECURE = False
+    CSRF_COOKIE_SECURE = False
+    SECURE_CONTENT_TYPE_NOSNIFF = False
+
+    # Development-only: relax COOP and allow any localhost dev-server port.
     SECURE_CROSS_ORIGIN_OPENER_POLICY = None
-    
-    # Allow all localhost variations and disable some security checks
-    ALLOWED_HOSTS = ['*']  # Already set, but ensuring it's permissive
-    
-    # Additional settings to prevent COOP issues
-    X_FRAME_OPTIONS = 'SAMEORIGIN'  # Allow framing from same origin
-    SECURE_CONTENT_TYPE_NOSNIFF = False  # Disable content type sniffing protection
-    
-    # CORS settings specifically for the create route issue
+    X_FRAME_OPTIONS = 'SAMEORIGIN'
+    CORS_PREFLIGHT_MAX_AGE = 86400  # 24 hours - cache preflight requests
+
     CORS_ALLOW_ALL_ORIGINS = False  # Keep security, but use regex patterns
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"^http://localhost:\d+$",  # Allow any localhost port
+        r"^http://127\.0\.0\.1:\d+$",  # Allow any 127.0.0.1 port
+    ]
     CORS_URLS_REGEX = r'^.*$'  # Apply CORS to all URLs
 
 # Logging
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(exist_ok=True)
+
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -256,7 +546,7 @@ LOGGING = {
         'file': {
             'level': 'INFO',
             'class': 'logging.FileHandler',
-            'filename': BASE_DIR / 'logs' / 'eduquantum.log',
+            'filename': LOGS_DIR / 'eduquantum.log',
         },
     },
     'loggers': {

@@ -39,6 +39,7 @@ const ReportDetail: React.FC = () => {
         if (id) {
             loadReport();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id]);
 
     const loadReport = async () => {

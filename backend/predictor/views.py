@@ -1,6 +1,7 @@
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
+from django.conf import settings
 from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 from django.core.paginator import Paginator
@@ -51,107 +52,6 @@ def dashboard(request):
         'topic_frequencies_json': json.dumps(topic_frequencies),
     }
     return render(request, 'predictor/dashboard.html', context)
-
-
-@login_required
-@require_POST
-def exam_process(request, pk):
-    """AJAX endpoint to trigger exam paper processing."""
-    exam_paper = get_object_or_404(ExamPaper, pk=pk, user=request.user)
-
-    if exam_paper.processed:
-        return JsonResponse({'status': 'error', 'message': 'Exam paper already processed'})
-
-    try:
-        from .services.gemini_client import GeminiClient
-        import os
-
-        # Extract text based on file type
-        file_path = exam_paper.file.path
-        file_extension = os.path.splitext(file_path)[1].lower()
-        exam_paper_text = ""
-
-        if file_extension == '.txt':
-            # Read text file directly
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                exam_paper_text = f.read()
-        elif file_extension == '.pdf':
-            # Extract text from PDF
-            import PyPDF2
-            with open(file_path, 'rb') as f:
-                pdf_reader = PyPDF2.PdfReader(f)
-                for page in pdf_reader.pages:
-                    exam_paper_text += page.extract_text() + "\n"
-        elif file_extension in ['.docx', '.doc']:
-            # Extract text from DOCX
-            import docx
-            doc = docx.Document(file_path)
-            for paragraph in doc.paragraphs:
-                exam_paper_text += paragraph.text + "\n"
-        else:
-            return JsonResponse({
-                'status': 'error',
-                'message': f'Unsupported file type: {file_extension}. Please upload PDF, DOC, DOCX, or TXT files.'
-            })
-
-        if not exam_paper_text.strip():
-            return JsonResponse({
-                'status': 'error',
-                'message': 'Could not extract text from the file. The file may be corrupted or empty.'
-            })
-
-        # Initialize Gemini client
-        gemini_client = GeminiClient()
-
-        # Extract topics using Gemini Pro
-        result = gemini_client.extract_topics(exam_paper_text, max_topics=15)
-
-        if result.success and result.topics:
-            # Save processing results
-            exam_paper.extracted_text = exam_paper_text[:1000]  # Store first 1000 chars as preview
-            exam_paper.topic_count = len(result.topics)
-            exam_paper.processed = True
-            exam_paper.processed_at = timezone.now()
-            exam_paper.save()
-
-            # Create Topic objects
-            for topic_result in result.topics:
-                Topic.objects.create(
-                    exam_paper=exam_paper,
-                    name=topic_result.name,
-                    description=topic_result.description,
-                    frequency=1,  # Default frequency
-                    metadata={
-                        'confidence': topic_result.confidence,
-                        'category': topic_result.category,
-                        'keywords': topic_result.keywords,
-                        'source_text': exam_paper_text[:500]  # Store sample text
-                    }
-                )
-
-            return JsonResponse({
-                'status': 'success',
-                'message': f'Exam paper processed successfully. Found {len(result.topics)} topics.',
-                'topic_count': len(result.topics),
-                'processing_time': result.processing_time
-            })
-        else:
-            return JsonResponse({
-                'status': 'error',
-                'message': f'Processing failed: {result.error or "No topics extracted"}'
-            })
-
-    except ImportError as e:
-        return JsonResponse({
-            'status': 'error',
-            'message': f'Missing dependencies: {e}. Please install required packages.'
-        })
-    except Exception as e:
-        logger.error(f"Error processing exam paper {pk}: {e}")
-        return JsonResponse({
-            'status': 'error',
-            'message': f'Processing failed: {str(e)}'
-        })
 
 
 @login_required
@@ -401,53 +301,86 @@ def syllabus_process(request, pk):
                 'message': 'Could not extract text from the file. The file may be corrupted or empty.'
             })
 
+        # Extract topics using Gemini Pro
+        if not settings.GEMINI_API_KEY:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'GEMINI_API_KEY is not configured. Topic extraction is unavailable.'
+            }, status=503)
+
         # Initialize Gemini client
         gemini_client = GeminiClient()
-
-        # Extract topics using Gemini Pro
         result = gemini_client.extract_topics(syllabus_text, max_topics=20)
 
         if result.success and result.topics:
+            topics = [
+                {
+                    'name': topic.name,
+                    'description': topic.description,
+                    'confidence': topic.confidence,
+                    'category': topic.category,
+                    'keywords': topic.keywords,
+                }
+                for topic in result.topics
+            ]
+
             # Save processing results
             syllabus.extracted_text = syllabus_text[:1000]  # Store first 1000 chars as preview
-            syllabus.topic_count = len(result.topics)
+            syllabus.topic_count = len(topics)
             syllabus.processed = True
             syllabus.processed_at = timezone.now()
-            syllabus.topics_covered = result.topics
+            syllabus.topics_covered = topics
             syllabus.save()
 
             # Create Topic objects
-            for topic_data in result.topics:
+            for topic_data in topics:
                 Topic.objects.create(
                     syllabus=syllabus,
                     name=topic_data['name'],
-                    description=topic_data.get('description', ''),
-                    frequency=topic_data.get('frequency', 1),
-                    metadata=topic_data.get('metadata', {})
+                    description=topic_data['description'],
+                    frequency=1,
+                    metadata={
+                        'confidence': topic_data['confidence'],
+                        'category': topic_data['category'],
+                        'keywords': topic_data['keywords'],
+                    }
                 )
 
-            # Generate quantum predictions for the syllabus
-            from .services.eduquantum_integrator import EduQuantumIntegrator
-            integrator = EduQuantumIntegrator()
-            prediction_result = integrator.process_syllabus_and_predict(syllabus.id, request.user.id)
+            # Generate predictions for the syllabus. Prediction failures must not
+            # discard the successfully extracted topics.
+            prediction_created = False
+            try:
+                from .services.eduquantum_integrator import EduQuantumIntegrator
+
+                integrator = EduQuantumIntegrator()
+                prediction_result = integrator.process_syllabus_and_predict(
+                    syllabus.id, request.user.id
+                )
+                prediction_created = prediction_result.success
+            except Exception as prediction_error:
+                logger.warning(
+                    "Prediction generation failed for syllabus %s: %s",
+                    pk,
+                    prediction_error,
+                )
 
             return JsonResponse({
                 'status': 'success',
-                'message': f'Successfully processed syllabus. Found {len(result.topics)} topics.',
-                'topics_count': len(result.topics),
-                'prediction_created': prediction_result.success
+                'message': f'Successfully processed syllabus. Found {len(topics)} topics.',
+                'topics_count': len(topics),
+                'prediction_created': prediction_created
             })
         else:
             return JsonResponse({
                 'status': 'error',
-                'message': 'Failed to extract topics from syllabus. Please try again.'
+                'message': f'Failed to extract topics from syllabus: {result.error or "no topics returned"}'
             })
 
     except Exception as e:
-        logger.error(f"Error processing syllabus {pk}: {str(e)}")
+        logger.exception("Error processing syllabus pk=%s", pk)
         return JsonResponse({
             'status': 'error',
-            'message': f'An error occurred while processing the syllabus: {str(e)}'
+            'message': 'An error occurred while processing the syllabus.'
         })
 
 
@@ -491,8 +424,6 @@ def prediction_create(request):
         form = PredictionForm(request.POST, user=request.user)
         if form.is_valid():
             exam_paper = form.cleaned_data['exam_paper']
-            prediction_type = form.cleaned_data['prediction_type']
-            description = form.cleaned_data.get('description', '')
 
             try:
                 # Import and use the integration service
@@ -500,15 +431,19 @@ def prediction_create(request):
 
                 integrator = EduQuantumIntegrator()
 
-                # Process exam paper and generate predictions
-                result = integrator.process_exam_and_predict(
-                    exam_paper_id=exam_paper.id,
+                # Analyze the exam and update predictions derived from it
+                result = integrator.analyze_exam_and_update_predictions(
+                    exam_id=exam_paper.id,
                     user_id=request.user.id
                 )
 
                 if result.success:
-                    messages.success(request, f'Prediction created successfully! Processing time: {result.processing_time:.1f}s')
-                    return redirect('predictor:prediction_detail', pk=result.data['prediction_id'])
+                    updated = result.data.get('updated_predictions', 0)
+                    messages.success(
+                        request,
+                        f"Exam analyzed successfully. Updated {updated} existing prediction(s)."
+                    )
+                    return redirect('predictor:prediction_list')
                 else:
                     messages.error(request, f'Failed to create prediction: {result.error}')
                     return redirect('predictor:prediction_create')
@@ -564,6 +499,12 @@ def exam_process(request, pk):
     try:
         exam_paper = get_object_or_404(ExamPaper, pk=pk, user=request.user)
 
+        if not settings.GEMINI_API_KEY:
+            return JsonResponse({
+                'status': 'error',
+                'message': 'GEMINI_API_KEY is not configured. Exam analysis is unavailable.'
+            }, status=503)
+
         # Import exam analysis service
         from .services.exam_analysis_service import ExamAnalysisService
 
@@ -611,15 +552,16 @@ def exam_process(request, pk):
             })
 
     except ImportError as e:
+        logger.exception("Missing dependency while processing exam pk=%s", pk)
         return JsonResponse({
             'status': 'error',
-            'message': f'Missing dependencies: {e}. Please install required packages.'
+            'message': 'Required processing dependencies are unavailable.'
         })
     except Exception as e:
-        logger.error(f"Error processing exam {pk}: {e}")
+        logger.exception("Error processing exam pk=%s", pk)
         return JsonResponse({
             'status': 'error',
-            'message': f'Processing failed: {str(e)}'
+            'message': 'Exam processing failed.'
         })
 
 
@@ -689,8 +631,10 @@ def dashboard_data_api(request):
         return JsonResponse(data)
 
     except Exception as e:
-        logger.error(f"Error fetching dashboard data: {e}")
-        return JsonResponse({'error': str(e)}, status=500)
+        logger.exception("Error fetching dashboard data")
+        return JsonResponse(
+            {'error': 'Dashboard data is temporarily unavailable.'}, status=500
+        )
 
 
 # Authentication API Views
@@ -720,13 +664,9 @@ def api_login(request):
         if user is not None:
             login(request, user)
             
-            # For now, return a simple token (in production, use proper JWT)
-            token = f"session_{user.id}_{user.username}"
-            
             return JsonResponse({
                 'success': True,
                 'message': 'Login successful',
-                'token': token,
                 'user': {
                     'id': user.id,
                     'username': user.username,
@@ -767,8 +707,8 @@ def api_register(request):
             }, status=405)
             
         logger.info(f"Content-Type: {request.content_type}")
-        logger.info(f"Request body: {request.body.decode('utf-8')}")
-        
+        # Never log the raw request body: it contains passwords.
+
         data = json.loads(request.body)
         username = data.get('username')
         email = data.get('email')
@@ -818,14 +758,9 @@ def api_register(request):
         login(request, user)
         logger.info("User logged in successfully")
 
-        # For now, return a simple token (in production, use proper JWT)
-        # This is a simple session-based approach
-        token = f"session_{user.id}_{user.username}"
-
         return JsonResponse({
             'success': True,
             'message': 'Registration successful',
-            'token': token,
             'user': {
                 'id': user.id,
                 'username': user.username,
@@ -848,7 +783,7 @@ def api_register(request):
         logger.error(f"Traceback: {traceback.format_exc()}")
         return JsonResponse({
             'success': False,
-            'message': f'Internal server error: {str(e)}'
+            'message': 'Internal server error'
         }, status=500)
 
 
@@ -882,3 +817,12 @@ def api_csrf_token(request):
     return JsonResponse({
         'csrf_token': get_token(request)
     })
+
+
+def health_check(request):
+    """Minimal liveness probe.
+
+    Deliberately returns no configuration, database details, versions or
+    stack traces; safe to expose anonymously behind load balancers.
+    """
+    return JsonResponse({'status': 'ok'})

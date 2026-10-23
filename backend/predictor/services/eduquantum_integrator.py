@@ -130,93 +130,6 @@ class EduQuantumIntegrator:
                 error=str(e),
                 processing_time=time.time() - start_time
             )
-        """
-        Complete workflow: Process exam paper -> Analyze content -> Generate quantum predictions.
-
-        Args:
-            exam_paper_id: ID of the exam paper to process
-            user_id: ID of the user
-
-        Returns:
-            IntegrationResult with complete analysis
-        """
-        import time
-        start_time = time.time()
-
-        try:
-            # Step 1: Get exam paper and validate
-            exam_paper = ExamPaper.objects.get(id=exam_paper_id, user_id=user_id)
-
-            # Step 2: Extract exam topics
-            exam_topics = self._extract_exam_topics(exam_paper)
-
-            # Step 3: Analyze exam paper content
-            exam_analysis_result = self._analyze_exam_paper(exam_paper)
-            exam_analysis_results = [exam_analysis_result]
-
-            # Step 4: Generate quantum predictions
-            quantum_result = self._generate_quantum_predictions(
-                exam_topics, exam_analysis_results
-            )
-
-            # Step 5: Create final recommendations
-            recommendations = self._generate_recommendations(
-                exam_topics, exam_analysis_results, quantum_result
-            )
-
-            # Step 6: Calculate overall confidence
-            confidence_score = self._calculate_overall_confidence(
-                exam_topics, exam_analysis_results, quantum_result
-            )
-
-            # Step 7: Create prediction record
-            workflow_data = PredictionWorkflow(
-                exam_analysis={
-                    'topics': exam_topics,
-                    'exam_analysis': exam_analysis_result
-                },
-                quantum_prediction=quantum_result,
-                final_recommendations=recommendations,
-                confidence_score=confidence_score
-            )
-
-            prediction = self._create_prediction_record(
-                exam_paper, workflow_data, user_id
-            )
-
-            processing_time = time.time() - start_time
-
-            return IntegrationResult(
-                success=True,
-                message=f"Successfully processed exam paper and generated predictions",
-                data={
-                    'prediction_id': prediction.id,
-                    'exam_topics': len(exam_topics.get('topics', [])),
-                    'exam_analysis': exam_analysis_result,
-                    'recommendations': len(recommendations),
-                    'confidence_score': confidence_score,
-                    'workflow_data': workflow_data
-                },
-                processing_time=processing_time
-            )
-
-        except ExamPaper.DoesNotExist:
-            return IntegrationResult(
-                success=False,
-                message="Exam paper not found",
-                data={},
-                error="Exam paper not found",
-                processing_time=time.time() - start_time
-            )
-        except Exception as e:
-            logger.error(f"Error in exam paper prediction workflow: {e}")
-            return IntegrationResult(
-                success=False,
-                message="Failed to process exam paper and generate predictions",
-                data={},
-                error=str(e),
-                processing_time=time.time() - start_time
-            )
 
     def analyze_exam_and_update_predictions(self, exam_id: int, user_id: int) -> IntegrationResult:
         """
@@ -301,6 +214,67 @@ class EduQuantumIntegrator:
                 error=str(e),
                 processing_time=time.time() - start_time
             )
+
+    def _extract_syllabus_topics(self, syllabus: Syllabus) -> Dict[str, Any]:
+        """Load normalized syllabus topics from the database."""
+        topics_data = {
+            'topics': [],
+            'total_topics': 0,
+            'extraction_method': 'database',
+            'confidence': 0.0,
+        }
+
+        topics = Topic.objects.filter(syllabus=syllabus)
+        topics_data['total_topics'] = topics.count()
+
+        for topic in topics:
+            metadata = topic.metadata or {}
+            topics_data['topics'].append({
+                'name': topic.name,
+                'frequency': topic.frequency,
+                'description': topic.description,
+                'confidence': metadata.get('confidence', 0.5),
+                'category': metadata.get('category', 'general'),
+                'keywords': metadata.get('keywords', []),
+            })
+
+        if topics_data['topics']:
+            topics_data['confidence'] = (
+                sum(t['confidence'] for t in topics_data['topics'])
+                / len(topics_data['topics'])
+            )
+
+        return topics_data
+
+    def _extract_exam_topics(self, exam_paper: ExamPaper) -> Dict[str, Any]:
+        """Load normalized exam topics from the database."""
+        topics_data = {
+            'topics': [],
+            'total_topics': 0,
+            'extraction_method': 'database',
+            'confidence': 0.0,
+        }
+
+        topics = Topic.objects.filter(exam_paper=exam_paper)
+        topics_data['total_topics'] = topics.count()
+
+        for topic in topics:
+            metadata = topic.metadata or {}
+            topics_data['topics'].append({
+                'name': topic.name,
+                'frequency': topic.frequency,
+                'description': topic.description,
+                'confidence': metadata.get('confidence', 0.5),
+                'category': metadata.get('category', 'general'),
+            })
+
+        if topics_data['topics']:
+            topics_data['confidence'] = (
+                sum(t['confidence'] for t in topics_data['topics'])
+                / len(topics_data['topics'])
+            )
+
+        return topics_data
 
     def _generate_quantum_predictions_from_syllabus(self, syllabus_topics: Dict[str, Any]) -> Dict[str, Any]:
         """Generate quantum-based predictions from syllabus topics."""
@@ -402,7 +376,7 @@ class EduQuantumIntegrator:
             prediction = Prediction.objects.create(
                 user_id=user_id,
                 syllabus=syllabus,
-                prediction_type='syllabus_analysis',
+                prediction_type='HYBRID',
                 description=f"Syllabus analysis for {syllabus.title}",
                 accuracy_score=workflow_data.confidence_score * 100,
                 quantum_result=workflow_data.quantum_prediction,
@@ -417,38 +391,6 @@ class EduQuantumIntegrator:
             )
 
         return prediction
-        """Extract topics from exam paper."""
-        topics_data = {
-            'topics': [],
-            'total_topics': 0,
-            'extraction_method': 'database',
-            'confidence': 0.0
-        }
-
-        # Get topics from database
-        topics = Topic.objects.filter(exam_paper=exam_paper)
-        topics_data['total_topics'] = topics.count()
-
-        for topic in topics:
-            topic_info = {
-                'name': topic.name,
-                'frequency': topic.frequency,
-                'description': topic.description,
-                'confidence': topic.metadata.get('confidence', 0.5) if topic.metadata else 0.5,
-                'category': topic.metadata.get('category', 'general') if topic.metadata else 'general'
-            }
-            topics_data['topics'].append(topic_info)
-
-        # Calculate average confidence
-        if topics_data['topics']:
-            confidences = [t['confidence'] for t in topics_data['topics']]
-            topics_data['confidence'] = sum(confidences) / len(confidences)
-        else:
-            topics_data['confidence'] = 0.0
-
-        return topics_data
-
-        return topics_data
 
     def _generate_quantum_predictions(self, exam_topics: Dict[str, Any],
                                     exam_analysis_results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -586,7 +528,7 @@ class EduQuantumIntegrator:
             prediction = Prediction.objects.create(
                 user_id=user_id,
                 exam_paper=exam_paper,
-                prediction_type='comprehensive',
+                prediction_type='HYBRID',
                 description=f"Comprehensive analysis of {exam_paper.title}",
                 accuracy_score=workflow_data.confidence_score * 100,
                 quantum_result=workflow_data.quantum_prediction,

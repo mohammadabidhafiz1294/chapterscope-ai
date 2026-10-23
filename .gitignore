@@ -154,4 +154,26 @@ scripts/
 templates/
 .github/prompts/
 .github/
+!.github/
+!.github/workflows/
+!.github/workflows/ci.yml
 specs/
+# Local runtime artifacts (do not commit)
+backend/db.sqlite3
+backend/media/
+backend/staticfiles/
+backend/logs/
+data/reports.db
+
+# Local tooling and generated repository analysis
+.opencode/
+graphify-out/
+
+docs/
+.vscode/
+data/
+.serena/
+tests/
+templates/
+specs/
+scripts/

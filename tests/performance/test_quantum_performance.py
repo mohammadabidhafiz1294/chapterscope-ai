@@ -21,9 +21,13 @@ class TestQuantumPerformance:
         # Mock quantum as available
         self.mock_predictor.quantum_available = True
 
-        # Patch the predictor in the API
-        with patch('src.api.main.predictor', self.mock_predictor):
-            pass
+        # Patch the predictor in the API for the duration of the test
+        self.predictor_patcher = patch('src.api.main.predictor', self.mock_predictor)
+        self.predictor_patcher.start()
+
+    def teardown_method(self):
+        """Stop patchers started in setup_method."""
+        self.predictor_patcher.stop()
 
     def test_quantum_simulation_timing_baseline(self):
         """Test baseline timing for quantum simulation."""

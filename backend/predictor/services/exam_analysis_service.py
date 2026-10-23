@@ -54,6 +54,13 @@ class ExamAnalysisService:
         self.analysis_version = "1.0"
         logger.info("ExamAnalysisService initialized")
 
+    @staticmethod
+    def _decode_content(file_content: bytes) -> str:
+        """Decode raw uploaded bytes into text for segmentation."""
+        if isinstance(file_content, str):
+            return file_content
+        return file_content.decode("utf-8", errors="ignore")
+
     def analyze_exam_file(self, file_content: bytes, filename: str,
                          syllabus_topics: Optional[List[str]] = None,
                          exam_history: Optional[List[Dict[str, Any]]] = None) -> ExamAnalysisResult:
@@ -85,7 +92,11 @@ class ExamAnalysisService:
             logger.info(f"Starting exam analysis for file: {filename}")
             segmentation_start = timezone.now()
 
-            questions = self.segmenter.segment_questions(file_content, filename)
+            text = self._decode_content(file_content)
+            segmentation_result = self.segmenter.segment_questions(text)
+            questions = (
+                segmentation_result.questions if segmentation_result.success else []
+            )
             processing_stats['segmentation_time'] = (timezone.now() - segmentation_start).total_seconds()
 
             if not questions:
@@ -98,7 +109,7 @@ class ExamAnalysisService:
                     frequency_analysis={},
                     predictions={},
                     processing_stats=processing_stats,
-                    error="No questions found in the file"
+                    error=segmentation_result.error or "No questions found in the file"
                 )
 
             processing_stats['total_questions'] = len(questions)
@@ -312,7 +323,7 @@ class ExamAnalysisService:
                 'id': i + 1,
                 'question_text': question.question_text[:200] + '...' if len(question.question_text) > 200 else question.question_text,
                 'question_type': question.question_type,
-                'difficulty': question.difficulty,
+                'difficulty': question.estimated_difficulty,
                 'marks': question.marks,
                 'topic': classification.primary_topic,
                 'secondary_topics': classification.secondary_topics,

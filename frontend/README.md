@@ -1,10 +1,10 @@
-# Hybrid Quantum AI Frontend
+# ChapterScope AI Frontend
 
 This is the React frontend for the Hybrid Quantum AI Exam Questions Analysis System.
 
 ## Features
 
-- **Authentication**: JWT-based authentication with login/register
+- **Authentication**: Django session-cookie authentication with login/register
 - **Dashboard**: View and manage prediction reports
 - **Report Creation**: Create new analysis reports with topic selection
 - **Report Details**: View detailed reports with interactive charts
@@ -19,7 +19,7 @@ This is the React frontend for the Hybrid Quantum AI Exam Questions Analysis Sys
 - **Bootstrap 5** for styling
 - **Chart.js** with react-chartjs-2 for visualizations
 - **Axios** for API communication
-- **JWT Authentication**
+- **Axios + Django session cookies**
 
 ## Getting Started
 
@@ -75,9 +75,9 @@ The frontend connects to the FastAPI backend running on port 8000. Make sure the
 ### Authentication Flow
 
 1. User registers or logs in
-2. JWT token is stored in localStorage
-3. API requests include the token in Authorization header
-4. Token is automatically refreshed on expiration
+2. Django creates an HttpOnly session cookie
+3. API requests use `withCredentials` and CSRF protection for writes
+4. The browser session is validated through `/api/auth/validate/`
 
 ### Key Endpoints
 
@@ -128,7 +128,7 @@ The frontend connects to the FastAPI backend running on port 8000. Make sure the
 - Tabbed interface for different views
 
 ### Authentication
-- Secure JWT token management
+- Secure Django session-cookie and CSRF handling
 - Protected routes
 - Automatic logout on token expiration
 - User registration and login forms

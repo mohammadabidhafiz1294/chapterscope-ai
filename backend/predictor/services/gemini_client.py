@@ -36,10 +36,14 @@ class GeminiClient:
     """Client for interacting with Google Gemini Pro API."""
 
     def __init__(self, api_key: Optional[str] = None):
-        """Initialize Gemini client."""
-        self.api_key = api_key or getattr(settings, 'GEMINI_API_KEY', None)
+        """Initialize Gemini client.
+
+        The API key is validated lazily so services that merely construct a
+        client can still be imported and unit-tested without credentials.
+        """
+        self.api_key = (api_key or getattr(settings, 'GEMINI_API_KEY', '') or '').strip()
         if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not found in settings")
+            logger.warning("GEMINI_API_KEY is not configured; AI requests will fail")
 
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
         self.model = "gemini-pro"
@@ -65,6 +69,9 @@ class GeminiClient:
 
     def _make_request(self, prompt: str, max_tokens: int = 1000) -> Dict[str, Any]:
         """Make a request to Gemini API."""
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY is not configured")
+
         self._wait_for_rate_limit()
 
         url = f"{self.base_url}/models/{self.model}:generateContent"
@@ -272,3 +279,40 @@ class GeminiClient:
                 "estimated_study_hours": 0,
                 "prerequisites": []
             }
+
+    def generate_json(
+        self, prompt: str, max_tokens: int = 2000
+    ) -> Optional[Dict[str, Any]]:
+        """Generate a JSON object response from an arbitrary prompt.
+
+        Phase 3 uses this as the LLM-assisted parsing fallback. Returns the
+        parsed dict, or None on any failure (network, auth, malformed JSON).
+        Never logs the API key or raw document content.
+        """
+        try:
+            response = self._make_request(prompt, max_tokens=max_tokens)
+        except Exception as exc:
+            logger.error("Gemini generate_json request failed: %s", exc)
+            return None
+
+        try:
+            candidates = response.get('candidates') or []
+            if not candidates:
+                logger.warning("Gemini generate_json returned no candidates")
+                return None
+            content = candidates[0]['content']['parts'][0]['text']
+        except (KeyError, IndexError, TypeError) as exc:
+            logger.warning("Gemini generate_json response missing content: %s", exc)
+            return None
+
+        # Robustly locate a JSON object inside the response text.
+        try:
+            json_start = content.find('{')
+            json_end = content.rfind('}') + 1
+            if json_start == -1 or json_end <= json_start:
+                logger.warning("Gemini generate_json response contained no JSON object")
+                return None
+            return json.loads(content[json_start:json_end])
+        except json.JSONDecodeError as exc:
+            logger.warning("Gemini generate_json returned invalid JSON: %s", exc)
+            return None

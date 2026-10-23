@@ -6,6 +6,10 @@ import Login from './components/Login';
 import Dashboard from './pages/Dashboard';
 import ReportDetail from './pages/ReportDetail';
 import CreateReport from './pages/CreateReport';
+import Notebooks from './pages/Notebooks';
+import NotebookDetail from './pages/NotebookDetail';
+import NotebookPractice from './pages/NotebookPractice';
+import GeneratedQuestionDetail from './pages/GeneratedQuestionDetail';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
 
@@ -56,6 +60,38 @@ function App() {
                             element={
                                 <ProtectedRoute>
                                     <ReportDetail />
+                                </ProtectedRoute>
+                            }
+                        />
+                        <Route
+                            path="/notebooks"
+                            element={
+                                <ProtectedRoute>
+                                    <Notebooks />
+                                </ProtectedRoute>
+                            }
+                        />
+                        <Route
+                            path="/notebooks/:id"
+                            element={
+                                <ProtectedRoute>
+                                    <NotebookDetail />
+                                </ProtectedRoute>
+                            }
+                        />
+                        <Route
+                            path="/notebooks/:id/practice"
+                            element={
+                                <ProtectedRoute>
+                                    <NotebookPractice />
+                                </ProtectedRoute>
+                            }
+                        />
+                        <Route
+                            path="/notebooks/:id/generated/:qid"
+                            element={
+                                <ProtectedRoute>
+                                    <GeneratedQuestionDetail />
                                 </ProtectedRoute>
                             }
                         />

@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import axios from 'axios';
 
 interface User {
-    id: string;
+    id: number;
     username: string;
     email: string;
 }
@@ -18,65 +18,29 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const useAuth = () => {
+export const useAuth = (): AuthContextType => {
     const context = useContext(AuthContext);
-    if (context === undefined) {
-        throw new Error('useAuth must be used within an AuthProvider');
-    }
+    if (!context) throw new Error('useAuth must be used within an AuthProvider');
     return context;
 };
 
-interface AuthProviderProps {
-    children: ReactNode;
-}
-
-export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
+export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
     const [user, setUser] = useState<User | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        // Check if user is logged in on app start
-        const token = localStorage.getItem('authToken');
-        if (token) {
-            // Validate token with backend
-            validateToken(token);
-        } else {
-            setLoading(false);
-        }
+        axios.get('/api/auth/validate/', { withCredentials: true })
+            .then((response) => setUser(response.data.user))
+            .catch(() => setUser(null))
+            .finally(() => setLoading(false));
     }, []);
 
-    const validateToken = async (token: string) => {
-        try {
-            // For now, we'll simulate token validation
-            // In a real app, you'd call your backend API
-            const response = await axios.get('/api/auth/validate/', {
-                headers: { Authorization: `Bearer ${token}` }
-            });
-            setUser(response.data.user);
-        } catch (error) {
-            localStorage.removeItem('authToken');
-        } finally {
-            setLoading(false);
-        }
-    };
-
     const login = async (username: string, password: string) => {
+        setLoading(true);
         try {
-            setLoading(true);
-            // For now, we'll simulate login
-            // In a real app, you'd call your backend API
-            const response = await axios.post('/api/auth/login/', {
-                username,
-                password
-            });
-
-            const { token, user: userData } = response.data;
-            localStorage.setItem('authToken', token);
-            setUser(userData);
-
-            // Set axios default header for future requests
-            axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-        } catch (error) {
+            const response = await axios.post('/api/auth/login/', { username, password }, { withCredentials: true });
+            setUser(response.data.user);
+        } catch {
             throw new Error('Login failed. Please check your credentials.');
         } finally {
             setLoading(false);
@@ -84,23 +48,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
 
     const register = async (username: string, email: string, password: string) => {
+        setLoading(true);
         try {
-            setLoading(true);
-            // For now, we'll simulate registration
-            // In a real app, you'd call your backend API
-            const response = await axios.post('/api/auth/register/', {
-                username,
-                email,
-                password
-            });
-
-            const { token, user: userData } = response.data;
-            localStorage.setItem('authToken', token);
-            setUser(userData);
-
-            // Set axios default header for future requests
-            axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-        } catch (error) {
+            const response = await axios.post('/api/auth/register/', { username, email, password }, { withCredentials: true });
+            setUser(response.data.user);
+        } catch {
             throw new Error('Registration failed. Please try again.');
         } finally {
             setLoading(false);
@@ -108,22 +60,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
 
     const logout = () => {
-        localStorage.removeItem('authToken');
-        delete axios.defaults.headers.common['Authorization'];
+        void axios.post('/api/auth/logout/', {}, { withCredentials: true });
         setUser(null);
     };
 
-    const value: AuthContextType = {
-        user,
-        isAuthenticated: !!user,
-        loading,
-        login,
-        logout,
-        register
-    };
-
     return (
-        <AuthContext.Provider value={value}>
+        <AuthContext.Provider value={{ user, isAuthenticated: !!user, loading, login, logout, register }}>
             {children}
         </AuthContext.Provider>
     );

@@ -24,10 +24,18 @@ class TestMemoryLimits:
         # Mock quantum as available
         self.mock_predictor.quantum_available = True
 
-        # Patch the services in the API
-        with patch('src.api.main.predictor', self.mock_predictor), \
-             patch('src.api.main.data_loader', self.mock_data_loader):
-            pass
+        # Patch the services in the API for the duration of the test
+        self.predictor_patcher = patch('src.api.main.predictor', self.mock_predictor)
+        self.data_loader_patcher = patch(
+            'src.api.main.data_loader', self.mock_data_loader
+        )
+        self.predictor_patcher.start()
+        self.data_loader_patcher.start()
+
+    def teardown_method(self):
+        """Stop patchers started in setup_method."""
+        self.data_loader_patcher.stop()
+        self.predictor_patcher.stop()
 
     def test_memory_usage_baseline(self):
         """Test baseline memory usage for predictions."""
@@ -230,10 +238,12 @@ class TestMemoryLimits:
 
     def test_memory_usage_under_concurrent_load(self):
         """Test memory usage under concurrent load."""
-        import threading
+        import gc
         import queue
+        import threading
 
         process = psutil.Process(os.getpid())
+        gc.collect()
         initial_memory = process.memory_info().rss / 1024 / 1024
 
         # Mock response for concurrent calls
@@ -284,6 +294,7 @@ class TestMemoryLimits:
         for thread in threads:
             thread.join()
 
+        gc.collect()
         final_memory = process.memory_info().rss / 1024 / 1024
         total_memory_growth = final_memory - initial_memory
 
@@ -298,7 +309,9 @@ class TestMemoryLimits:
             assert "status" in result
             assert result["status"] == 200
             assert result["data"] is not None
-            assert result["memory_growth"] >= 0
+            # RSS can shrink when the garbage collector runs mid-request, so
+            # only require the per-request delta to stay within a sane band.
+            assert -100 < result["memory_growth"] < 100
 
         # Total memory growth should be reasonable
         assert total_memory_growth < 200  # Less than 200MB total growth

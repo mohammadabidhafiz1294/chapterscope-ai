@@ -52,18 +52,23 @@ async def create_report(request: ReportCreateRequest) -> ReportResponse:
 async def get_reports(
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(10, ge=1, le=100, description="Items per page"),
-    status: Optional[str] = Query(None, description="Filter by status")
+    status: Optional[str] = Query(None, description="Filter by status"),
+    prediction_year: Optional[int] = Query(
+        None, description="Filter by prediction year"
+    )
 ) -> ReportListResponse:
     """
     Retrieve all reports with pagination and filtering.
 
-    Returns a paginated list of reports with optional status filtering.
+    Returns a paginated list of reports with optional status and
+    prediction-year filtering.
     """
     try:
         result = report_service.get_all_reports(
             page=page,
             per_page=per_page,
-            status_filter=status
+            status_filter=status,
+            prediction_year=prediction_year
         )
 
         # Convert reports to response models

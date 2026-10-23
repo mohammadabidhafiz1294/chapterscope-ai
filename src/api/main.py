@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.config.settings import get_settings
 from src.models import (
@@ -66,6 +67,7 @@ async def predict_topics(request: PredictionRequest) -> PredictionResponse:
     fallback_used = False
     method_used = "hybrid"
     predictions = []
+    service_metrics: Dict[str, Any] = {}
 
     try:
         # Validate topics list is not empty
@@ -117,7 +119,9 @@ async def predict_topics(request: PredictionRequest) -> PredictionResponse:
                     "topics": request.topics,
                     "force_classical": request.force_classical
                 })
-                if service_result:
+                # Only trust well-formed service responses; anything else falls
+                # back to the local computation below.
+                if isinstance(service_result, dict) and service_result:
                     # Use service result if available
                     service_predictions = service_result.get("predictions", [])
                     if isinstance(service_predictions, list) and service_predictions:
@@ -127,6 +131,18 @@ async def predict_topics(request: PredictionRequest) -> PredictionResponse:
                     # Use method from service result if available, otherwise use determined method
                     if "method_used" in service_result:
                         method_used = service_result["method_used"]
+                    # Pass through diagnostics reported by the predictor service
+                    for metric in (
+                        "memory_usage_mb",
+                        "memory_limit_exceeded",
+                        "memory_threshold_exceeded",
+                        "performance_degraded",
+                        "optimizer_iterations",
+                        "quantum_circuit_depth",
+                        "quantum_resources",
+                    ):
+                        if service_result.get(metric) is not None:
+                            service_metrics[metric] = service_result[metric]
         except Exception:
             # If service call fails, trigger classical fallback
             fallback_used = True
@@ -253,23 +269,42 @@ async def predict_topics(request: PredictionRequest) -> PredictionResponse:
             "predictions": predictions,
             "execution_time_ms": execution_time_ms,
             "fallback_used": fallback_used,
-            "memory_usage_mb": memory_usage_mb,
+            "memory_usage_mb": service_metrics.get("memory_usage_mb", memory_usage_mb),
             "method_used": method_used,
-            "quantum_resources": {
-                "circuit_depth": 5,
-                "qubit_count": 4,
-                "gate_count": 25
-            } if method_used == "quantum" else None
+            "quantum_resources": (
+                service_metrics.get(
+                    "quantum_resources",
+                    {
+                        "circuit_depth": 5,
+                        "qubits_used": 4,
+                        "gate_count": 25,
+                    },
+                )
+                if method_used == "quantum" or "quantum_resources" in service_metrics
+                else None
+            ),
         }
 
-        # Add quantum-specific fields if using quantum method
+        # Echo diagnostic fields reported by the predictor service
+        for metric in (
+            "memory_limit_exceeded",
+            "memory_threshold_exceeded",
+            "performance_degraded",
+            "optimizer_iterations",
+            "quantum_circuit_depth",
+        ):
+            if metric in service_metrics:
+                response_data[metric] = service_metrics[metric]
+
+        # Add quantum-specific defaults when using the quantum method
         if method_used == "quantum":
-            response_data.update({
-                "optimizer_iterations": 100,
-                "quantum_circuit_depth": 5,
-                "performance_degraded": False,
-                "memory_threshold_exceeded": memory_usage_mb > 512
-            })
+            response_data.setdefault("optimizer_iterations", 100)
+            response_data.setdefault("quantum_circuit_depth", 5)
+            response_data.setdefault("performance_degraded", False)
+            response_data.setdefault(
+                "memory_threshold_exceeded",
+                response_data["memory_usage_mb"] > 512
+            )
 
         return PredictionResponse(**response_data)
 
@@ -352,10 +387,14 @@ async def train_models(request: TrainingRequest) -> TrainingResponse:
         # Mock training logic
         training_id = f"train_{int(time.time())}"
         status = "accepted" if request.async_processing else "success"
+        action = "Retraining" if request.force_retrain else "Training"
 
         response_data = {
             "status": status,
-            "message": f"Training {'started' if request.async_processing else 'completed'} successfully for {len(request.topics)} topics",
+            "message": (
+                f"{action} {'started' if request.async_processing else 'completed'} "
+                f"successfully for {len(request.topics)} topics"
+            ),
             "training_id": training_id
         }
 
@@ -368,7 +407,11 @@ async def train_models(request: TrainingRequest) -> TrainingResponse:
                 "topics_trained": len(request.topics)
             }
 
-        return TrainingResponse(**response_data)
+        response = TrainingResponse(**response_data)
+        if request.async_processing:
+            return JSONResponse(status_code=202, content=response.model_dump())
+
+        return response
 
     except HTTPException:
         raise

@@ -1,4 +1,4 @@
-# EduQuantum Backend API Documentation
+# ChapterScope AI Django backend
 
 ## Overview
 
@@ -294,6 +294,12 @@ const login = async (username: string, password: string) => {
 ```
 
 ## 📁 File Upload
+
+> **Current authentication note:** The canonical frontend uses Django
+> session-cookie authentication with `withCredentials` and CSRF tokens. It
+> does not store JWT/mock tokens in `localStorage`. Older examples elsewhere
+> in this legacy document are historical and must not be copied into a
+> deployment.
 
 ### Supported File Types
 

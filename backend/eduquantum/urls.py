@@ -29,6 +29,8 @@ urlpatterns = [
 
     # API endpoints
     path('api/', include([
+        # Anonymous liveness probe - no secrets, no stack traces.
+        path('health/', predictor_views.health_check, name='health'),
         path('auth/login/', predictor_views.api_login, name='api_login'),
         path('auth/register/', predictor_views.api_register, name='api_register'),
         path('auth/logout/', predictor_views.api_logout, name='api_logout'),
@@ -36,5 +38,7 @@ urlpatterns = [
         path('auth/csrf-token/', predictor_views.api_csrf_token, name='api_csrf_token'),
         # API-specific endpoints
         path('dashboard-data/', predictor_views.dashboard_data_api, name='dashboard_data_api'),
+        # Phase 2 course-notebook REST API (DRF serializers + permissions).
+        path('notebooks/', include('predictor.api_urls')),
     ])),
 ]

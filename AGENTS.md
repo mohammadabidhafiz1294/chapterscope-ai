@@ -1,76 +1,87 @@
-# ChapterScope AI — Project Instructions
+# ChapterScope AI — Agent Guide
 
 ## Product goal
-Build a course-oriented exam-intelligence application. Each course has a notebook containing its syllabus, previous-year papers, extracted questions, normalized topics, chapter analytics, generated practice questions, and persistent course-specific chat history. Chat answers must be grounded in that notebook's indexed sources and include source references where available.
+Course-oriented exam-intelligence application. Each course = a notebook containing its syllabus, previous-year papers, extracted questions, normalized topics, chapter analytics, generated practice questions, and persistent course-specific chat history. Chat answers must be grounded in that notebook's indexed sources and carry source references where available.
 
-## Existing repository constraints
-- Inspect the current repository before editing. This is an incremental modernization, not a greenfield rewrite.
-- Treat backend/eduquantum + backend/predictor as the primary Django backend unless Phase 0 documents a compelling, tested reason otherwise.
-- Inspect the separate root src/api and src/services implementation. Do not duplicate routes or business logic without a written rationale; do not delete legacy files during unrelated phases.
-- Reuse existing models/services where safe and preserve current user data/migrations.
-- Do not assume README paths, commands, APIs or claimed test coverage are correct until verified in this checkout.
+## Repo map — two backends, pick deliberately
+- `backend/` Django 4.2: settings package `eduquantum`, app `predictor` (models incl. Phase 2 course notebooks + Phase 3 `ExtractionRun`/`ExtractionChunk`, DRF API in `api.py`/`serializers.py`/`permissions.py`/`api_urls.py`, views, `services/` incl. the `services/extraction/` package, Phase 4 `services/rag/` (chunking, embeddings, schema, retrieval), Phase 5 `services/analytics/` (errors, labels, catalog, metrics, ranking, proposer, classify, review), Phase 6 `services/chat/` (errors, schema, prompts, context, model, pipeline — the source-grounded LangChain turn) and Phase 7 `services/generation/` (errors, schema, prompts, context, model, math_checks, validation, pipeline — the practice-question generator), `utils/` pdf/docx extractors). `manage.py` is here → every Django command runs from `backend/`. `/api/notebooks/*` = notebook-scoped REST (owner-checked).
+- `src/` FastAPI service (what `tests/` and the React frontend actually target): `src/api/main.py` (`/api/v1/*`), `src/api/reports.py` (router mounted at `/reports`), `src/services/`, `src/models/` (SQLAlchemy), `src/cli/main.py`, `src/config/` (pydantic-settings). Imports are absolute (`from src...`) → run uvicorn/CLI from the repo root with `PYTHONPATH=.`; `pytest -q` works directly because root `pytest.ini` sets `pythonpath = .`.
+- `frontend/` CRA + TypeScript React app (notebook Analytics tab: `src/components/NotebookAnalytics.tsx` + typed `src/services/analytics.ts`; chart.js registered only in that component). `tests/` = pytest suite for the FastAPI service. `specs/` + `scripts/` = spec-driven workflow (`scripts/get-feature-paths.sh` expects branch `NNN-*`). `data/` = sample CSVs + generated exports.
+- Legacy overlap: Django `predictor/services/*` and FastAPI `src/services/*` duplicate business logic. Don't port or duplicate between them without a written rationale.
+- Phase 2 notebook rules: `Syllabus.notebook`/`ExamPaper.notebook` are nullable — legacy records stay unassigned and are attached explicitly (never inferred); `Question.notebook`/`year` denormalize from its exam paper; chat API accepts placeholder user messages only (no LLM yet); archived notebooks are read-only for content writes; deleting a notebook with attached papers/syllabi returns 409.
+- Phase 3 extraction rules: `predictor/services/extraction/` (validation → text → optional OCR → question parser → processor) is deterministic-first; reuse `utils/pdf_extractor.py`/`utils/docx_extractor.py` (never duplicate). Processing is synchronous in the `POST` request (no Celery/Redis/threads). Runs are idempotent by `file_hash` (200 + existing run) with stale `PROCESSING` runs auto-marked interrupted and fresh concurrent runs returning 409. Status flow `PENDING→PROCESSING→PROCESSED|NEEDS_REVIEW|OCR_REQUIRED|FAILED`; `processed=True` only on `PROCESSED`. Scanned/image-only PDFs with OCR unavailable report `OCR_REQUIRED` and **never fabricate questions**. Question upsert key = existing unique `(exam_paper, parent_number, question_number)`; only stale auto-extracted (`EXTRACTED`) questions are replaced — manual/needs-review rows are preserved. OCR is a pluggable `OCREngine` (optional Tesseract adapter behind guarded imports; no required dependency).
+- Phase 4 RAG rules: `predictor/services/rag/` = `errors` → `schema` → `embeddings` → `indexing` → `retrieval`; `DocumentChunk` rows are portable (SQLite included; the `embedding` column is typed `text` there) and only `DocumentChunkEmbedding` holds the vector (`vector(N)` + cosine HNSW index, PostgreSQL only) — never store or query a vector off PostgreSQL. Upsert key = stable `source_key` (`syl:{id}:c:{i}` / `q:{id}:c:{i}` / `p:{id}:c:{i}`); text identity = `content_hash`, so unchanged passages are never re-embedded. `DynamicVectorField` drops `dimensions` in `deconstruct()` (changing `EMBEDDING_DIMENSION` never emits a migration) — the column is owned by `schema.ensure_vector_schema()`, which self-heals by dropping *vectors* only (never chunk text/provenance) and runs from migration `0013_phase4_rag`, `post_migrate` and the indexing path. Retrieval is read-only, notebook-filtered in SQL, returns source references + `untrusted: true`, and answers `200 status=insufficient_evidence` instead of guessing; failures are `RAGError` codes mapped to 400/500/503/504 (`invalid_query`, `dimension_mismatch`, `invalid_provider_response`, `vector_backend_unavailable`, `embedding_unavailable`, `quota_exceeded`, `embedding_timeout`, `retrieval_timeout`); every provider exception is translated at the boundary (`embeddings.translate_exception`, used by `retrieval._embed_query`) so a raw SDK/`TimeoutError` can never reach the API in another shape. Provider errors mark chunks `FAILED` with a machine-readable code and never touch source rows or text; logs carry IDs/counts/codes/latency only. Auto-index hook: `ExtractionProcessor._index_for_retrieval` runs *after* the extraction transaction and is failure-isolated (`EMBEDDING_AUTO_INDEX`). Tests must never call a real provider (use `predictor/tests/rag_fakes.py`) and must never touch `DocumentChunkEmbedding` on SQLite.
+- Phase 5 analytics rules: `predictor/services/analytics/` = `errors` → `labels` → `catalog` → `metrics`/`ranking` → `proposer` → `classify` → `review`; all metrics come from ORM rows over **confirmed** links only (scope excludes `FAILED` questions; papers without questions stay out of every denominator). Per-paper normalization uses `ExamPaper.total_marks`, else the derived sum of parsed question marks (notices `derived_totals`/`missing_marks`); `long_term_frequency == paper_prevalence` by definition. `score` is a renormalised weighted blend (frequency/recency/trend/syllabus) with an explicit "not a prediction" disclaimer and full definitions repeated in the payload (`measure_labels`, `notice_labels`, `ranking.*`) — never LLM-generated numbers. `ANALYTICS_TREND_TOPICS` bounds the per-year series, `ANALYTICS_MAX_TOPICS` the ranked table. LLM use is limited to label *proposals* (`google-genai`, strict `{"proposals": [...]}` contract): unusable shape → 502 `llm_invalid_response`, provider failure → 503 `llm_unavailable`, both raised **before** any write; entries are validated/dropped individually; `<catalog>`/`<questions>` are untrusted data the prompt must not obey; below `TOPIC_REVIEW_MIN_CONFIDENCE` proposals are suggestions only. `NotebookTopic.save()` recomputes `normalized_name` (names unique per notebook; alias collisions rejected by `NotebookTopicSerializer` with 400 field errors). Metrics count `NEEDS_REVIEW` rows only in `links_pending_review`; review actions confirm/reject links, topics (blocked while confirmed links exist) and pending type labels; unknown/foreign ids → 400 `invalid_request`. Endpoints `/api/notebooks/<id>/analytics/*` are owner-scoped, GETs work on archived notebooks, writes return 400. Tests never call a real provider (stubbed client in `test_phase5_llm.py`); the synthetic fixture with hand-computed expectations lives in `predictor/tests/phase5_fixtures.py`.
+- Phase 6 chat rules: `predictor/services/chat/` = `errors` → `schema` → `prompts` → `context` → `model` → `pipeline`. `pipeline.respond(session, text)` order is fixed and deliberate: validate text (400 before any write) → resolve model (503 `chat_unavailable` before any write if disabled/unconfigured) → load bounded recent USER/ASSISTANT history → persist the USER message → notebook-filtered retrieval (Phase 4 `retrieval.search`) → one model call with a strict `{"answer", "citations", "insufficient_evidence"}` JSON contract → citation filtering → persist the ASSISTANT message. Config/model failures write nothing; retrieval/model failures keep the persisted user message and return it beside the error (`user_message`) so the client reconciles. Citations are filtered to keys that were **actually retrieved**; every display field (title/type/page/question/year/snippet/quote) is rebuilt server-side from the retrieval row, never taken from the model, and a quote is kept only if verbatim in the snippet. Zero retrievable rows, an `insufficient_evidence` flag, or zero valid citations all yield the fixed `INSUFFICIENT_MESSAGE` and `status: "insufficient_evidence"` — uncited model prose is never persisted. History and retrieved text are untrusted data: delimiter-escaped (regex `<(?=[a-zA-Z/])` → `< `), tagged, no tools bound; provider payloads/prompt/hidden reasoning are never stored or logged (only IDs/counts/codes/latency). Errors: `invalid_request` 400, `llm_invalid_response` 502, `chat_unavailable`/`llm_unavailable`/`llm_rate_limited` 503, `llm_timeout` 504; RAG errors keep their own status. Model = LangChain `ChatGoogleGenerativeAI` via `langchain-google-genai` (`gemini-2.5-flash`, configurable, credentials reuse `GEMINI_API_KEY`); provenance lives in the existing `ChatMessage.metadata` JSON (no migration). Frontend: `NotebookDetail` **Chat** tab (`components/NotebookChat.tsx`, typed client `services/chat.ts`) — session list/new session, history with an "insufficient evidence" badge, composer disabled on archived notebooks, clickable sources opening a modal. Tests never call a real provider (`chat_fakes.py`); SQLite covers the pipeline contract with fakes, a PostgreSQL-gated test (`test_phase6_chat_retrieval.py`, skipped on SQLite) indexes a real notebook with `FakeEmbeddingProvider` and drives the real `retrieval.search` over pgvector.
 
-## Engineering rules
-- Work on only the requested phase. Never silently proceed to later phases.
-- Before editing, inspect relevant files and explain a short implementation plan.
-- Make small, reviewable changes. Follow current code style unless fixing a concrete inconsistency.
-- Add or update tests for every new behavior and migration. Run focused tests, then the relevant full test suite; report commands and real outcomes.
-- Never claim a test passed if it was skipped or not run. Distinguish pre-existing failures from regressions.
+## Environment
+- venv is `hybrid-venv/` (gitignored): `source hybrid-venv/bin/activate`. Binary is `python3` (`python` is not aliased); Python 3.13.5.
+- Django settings are env-driven. `backend/.env` (gitignored) is loaded via `python-dotenv` when installed; real env vars win. `backend/.env.example` is the tracked template. Django reads `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`, `DATABASE_URL`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `SECURE_*`/cookie flags, `GEMINI_API_KEY`, `QISKIT_BACKEND`, `MAX_FILE_SIZE` (plus Phase 3 extraction/OCR vars: `EXTRACTION_MAX_PAGES`, `EXTRACTION_MAX_CHARS`, `EXTRACTION_MAX_DOCX_UNCOMPRESSED`, `EXTRACTION_OCR_MIN_CHARS`, `EXTRACTION_OCR_MIN_CONFIDENCE`, `EXTRACTION_REVIEW_CONFIDENCE`, `EXTRACTION_STALE_MINUTES`, `EXTRACTION_ENABLE_LLM_FALLBACK`, `OCR_ENGINE`) and Phase 4 RAG vars: `EMBEDDING_ENABLED`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSION`, `EMBEDDING_TASK_TYPE_DOCUMENT`, `EMBEDDING_TASK_TYPE_QUERY`, `EMBEDDING_BATCH_SIZE`, `EMBEDDING_MAX_TEXT_CHARS`, `EMBEDDING_TIMEOUT_SECONDS`, `EMBEDDING_MAX_RETRIES`, `EMBEDDING_AUTO_INDEX`, `RAG_TOP_K`, `RAG_MAX_TOP_K`, `RAG_CANDIDATE_MULTIPLIER`, `RAG_FUSION_ENABLED`, `RAG_RRF_K`, `RAG_MIN_SCORE`, `RAG_MAX_QUERY_CHARS`, `RAG_SNIPPET_CHARS`, `RAG_QUERY_TIMEOUT_SECONDS`) and Phase 5 analytics vars: `ANALYTICS_SECONDARY_WEIGHT`, `ANALYTICS_RECENT_YEARS`, `ANALYTICS_TREND_CAP`, `ANALYTICS_WEIGHT_FREQUENCY`, `ANALYTICS_WEIGHT_RECENCY`, `ANALYTICS_WEIGHT_TREND`, `ANALYTICS_WEIGHT_SYLLABUS`, `ANALYTICS_MAX_TOPICS`, `ANALYTICS_TREND_TOPICS`, `TOPIC_LLM_ENABLED`, `TOPIC_LLM_MODEL`, `TOPIC_LLM_TIMEOUT_SECONDS`, `TOPIC_REVIEW_MIN_CONFIDENCE`) and Phase 6 chat vars: `CHAT_LLM_ENABLED`, `CHAT_LLM_PROVIDER`, `CHAT_LLM_MODEL`, `CHAT_LLM_TEMPERATURE`, `CHAT_LLM_MAX_OUTPUT_TOKENS`, `CHAT_LLM_TIMEOUT_SECONDS`, `CHAT_MAX_MESSAGE_CHARS`, `CHAT_MAX_ANSWER_CHARS`, `CHAT_HISTORY_MESSAGES`, `CHAT_HISTORY_CHARS`, `CHAT_CONTEXT_CHARS`, `CHAT_RETRIEVAL_TOP_K`, `CHAT_RETRIEVAL_MIN_SCORE`, `CHAT_RETRIEVAL_KEYWORD`, `CHAT_RETRIEVAL_QUERY_CHARS`, `CHAT_MAX_CITATIONS`).
+- Production fail-safe (`DEBUG=False`): missing `SECRET_KEY`, placeholder `SECRET_KEY`, empty `ALLOWED_HOSTS` or missing `DATABASE_URL` raise `ImproperlyConfigured` at startup. In DEBUG an ephemeral key is generated. `GEMINI_API_KEY` is optional: missing key → AI endpoints return 503, never a fake key.
+- `DATABASE_URL` is parsed by the pure helper `backend/eduquantum/db_url.py` (SQLite/PostgreSQL/MySQL, percent-encoded credentials, IPv6, ports, query options like `?sslmode=require`); driver is `psycopg2-binary`. Default is SQLite at `backend/db.sqlite3`.
+- FastAPI settings: `src/config/settings.py` loads `.env` via pydantic (`Config.env_file`); `src/config/database.py` falls back to SQLite `data/reports.db` unless `DATABASE_URL` is set.
+- Auth: Django pages/JSON APIs use session cookies + `@login_required`; `/api/auth/login|register` are `csrf_exempt` and return a legacy `token` placeholder that is **not** a credential. DRF defaults to `IsAuthenticated` + `SessionAuthentication`. Only `GET /api/health/` (`{"status": "ok"}`) is anonymous.
+- Tracked local artifacts (`backend/db.sqlite3`, `backend/media/`, `backend/staticfiles/`, `data/reports.db`) are gitignored and currently staged for untracking (files stay on disk); don't re-add generated data.
+
+## Commands
+- FastAPI dev server: `make devserver` → `uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000`
+- CLI: `python3 -m src.cli.main predict <topic...> --data-file data/historical_exam_data.csv` (flags in `src/cli/main.py`)
+- Django: `cd backend && python3 manage.py check | migrate | runserver | createsuperuser` (SQLite by default via `.env`; migrations apply cleanly from scratch)
+- RAG index: `cd backend && python3 manage.py index_rag [--notebook ID] [--sync-only] [--limit N] [--reset-vectors] [--strict]` (sync is portable; embedding needs PostgreSQL + pgvector + `GEMINI_API_KEY`)
+- RAG vector DB for verification: `docker compose up -d postgres` → `DATABASE_URL=postgresql://chapterscope:chapterscope_dev@localhost:5432/chapterscope python3 manage.py test predictor` (image `pgvector/pgvector:pg17`; the extension and HNSW index are created by migration `0013_phase4_rag`)
+- Tests: `pytest -q` from repo root (163 passed baseline; `pytest.ini` sets `pythonpath`)
+  - one file: `pytest tests/contract/test_health_get.py -q`
+  - one test: `... -k test_name`
+- Django tests: `cd backend && python3 manage.py test predictor` (462 tests, 45 skipped on SQLite / ~11+ on PostgreSQL; creates a temp test DB; Phase 3 fixtures are synthetic-only under `predictor/tests/fixtures/`; Phase 5 = `test_phase5_{metrics,topic_labels,llm,api}.py` + `phase5_fixtures.py`, 117 tests; Phase 6 = `test_phase6_chat_{service,api,retrieval}.py` + `chat_fakes.py`). Phase 4 tests are gated on the backend: PostgreSQL-only cases check `connection.vendor == "postgresql"` and skip elsewhere — run the suite once with SQLite and once with the `DATABASE_URL` above.
+- Health: `curl http://localhost:8000/api/health/` → `{"status": "ok"}`
+- Missing `GEMINI_API_KEY` is expected; tests patch or assert the 503 path.
+- Lint/format: `make lint` (flake8 `src/ tests/`), `make format` (black `src/ tests/`); line length 88, black target py313 (`.flake8`, `pyproject.toml`)
+- Frontend: `cd frontend && npm start` (port 3000, CRA proxy → :8000), `npm test`, `npm run build` (node_modules already installed)
+- `make quality` = format + lint + test; `format` rewrites files — don't run it on unrelated changes.
+
+## Known-broken baselines (not your regression)
+- flake8 is dirty: 307 findings in `src/` (was 216; the +91 come from uncommitted FastAPI report-filtering edits dated Oct 22, not Phase 5), 405 in `backend/` (pre-existing debt in `views.py`, `models.py`, `services/*`, `middleware.py`, …; the Phase 2/3/4/5/6 additions — `services/rag/`, `services/extraction/`, `services/analytics/`, `services/chat/`, `predictor/tests/`, the Phase 4/5 migrations, the search endpoint — are clean); `make lint` covers only `src/` + `tests/`. `black --check src/ tests/` wants 26 files reformatted. Format only files you touch.
+- `backend/test_api.py`, `test_auth.py`, `test_coop_headers.py`, `test_new_features.py` are manual `requests` scripts against a live server at `http://localhost:8001` — not automated tests.
+- No CI workflows, no Dockerfile and no `.pre-commit-config.yaml`; the only container asset is `docker-compose.yml` (local PostgreSQL + pgvector for Phase 4 verification). README's pre-commit/CI claims are stale — trust the tree, not the README.
+- Ports disagree: FastAPI 8000 (`src/config/settings.py`), frontend axios default `http://localhost:8001` (`frontend/src/services/api.ts:4`), CRA proxy → 8000, CORS allows 3000/8001. Fixing the frontend wiring is Phase 2/6 work.
+- `src/api/main.py` serves mock historical data and forces `quantum_available = True`; its numbers are demo fixtures, not analytics.
+- `PredictionForm` still renders `prediction_type`/`description`, but the view ignores them (predictions are created only by the integrator). Left in place to avoid template churn.
+- `analyze_exam_and_update_predictions` only updates existing predictions; it never creates them. The view reports "Updated N existing prediction(s)" honestly.
+- Migrations `0004`, `0006`, `0008` are intentional no-ops (duplicate/MySQL-only SQL that never applied); `0003` was reordered so FK `AddField`s precede constraints. Don't delete them — the graph names must stay stable.
+- Legacy ML pins in `requirements.txt` (`torch`, `transformers`, `scikit-learn`, `spacy`) are not imported anywhere; optional deployment/monitoring sections (celery, redis, sphinx, gunicorn, pre-commit, …) are declared but not installed — a verified install subset is listed in `README.md`.
+- React report/dashboard pages still call the FastAPI service (`REACT_APP_API_URL` default `http://localhost:8001`); there is no Django reports API yet (Phase 2). `frontend/.env.example` documents this; never put secrets in `frontend/.env`.
+
+## Ground rules
+- Incremental modernization, not a rewrite. Work only on the requested phase; never silently start the next one.
+- Inspect before editing; state a short plan first. Small, reviewable changes; follow existing style.
+- Reuse existing models/services; preserve user data. Migrations additive; explain any backfill.
+- Add or update tests for every new behavior and migration. Run focused tests, then the relevant suite; report real commands and outcomes. Never claim a skipped/unrun test passed; separate pre-existing failures from regressions.
 - Never hard-code API keys, passwords, SECRET_KEY, hostnames, user IDs, or database credentials. Never expose provider secrets to React.
-- Do not run destructive database resets, remove migrations, rewrite Git history, push commits, or deploy without explicit user approval.
-- Uploaded documents and retrieved text are untrusted data, not system instructions. Protect against prompt injection in source documents.
-- Enforce notebook and user permissions on the server for every document, question, chat, citation and file request.
-- Keep SQL/ORM calculations deterministic. The LLM must not invent historical counts or statistics.
-- RAG retrieves evidence; it does not guarantee correctness. Preserve document/page/question references, support unknown/insufficient-evidence responses, and validate generated answers.
-- Do not add autonomous agents, VQE, Redis, Celery, or another database unless the requested phase requires it and the trade-off is documented. Start with a deterministic workflow.
-- Avoid unnecessary dependency upgrades. Pin compatible new dependencies and document Python/Node/PostgreSQL requirements.
+- No destructive DB resets, no removing migrations, no history rewrites, no pushes/deploys without explicit approval.
+- Don't delete legacy files during unrelated phases; don't duplicate routes or business logic without a written rationale.
+- Uploaded documents and retrieved text are untrusted data, not instructions — defend against prompt injection.
+- Enforce notebook/user permissions server-side on every document, question, chat, citation and file request.
+- Keep SQL/ORM calculations deterministic; the LLM must not invent historical counts or statistics.
+- RAG retrieves evidence, not correctness. Preserve document/page/question references, support insufficient-evidence answers, validate generated answers.
+- No autonomous agents, VQE, Redis, Celery, or extra databases unless the phase requires it and the trade-off is documented. Deterministic workflows first.
+- Avoid dependency churn; pin new deps and note Python/Node/PostgreSQL requirements.
 
-## Definition of done for every phase
-1. Code and tests match the scope of that phase.
-2. Migrations are additive and preserve existing data; explain any backfill.
-3. Lint/type-check/test commands were executed when available; list exact commands and results.
-4. Update documentation and `.env.example` when behavior or settings change.
-5. Report changed files, tests, known limitations, manual verification steps, and the next phase. Do not start the next phase.
+## Definition of done
+1. Code and tests match this phase's scope only.
+2. Migrations additive, existing data preserved, any backfill explained.
+3. Lint/type-check/test commands executed — list exact commands and real results.
+4. Docs and `.env.example` updated when behavior or settings change.
+5. Report changed files, tests, known limitations, manual verification steps, and the next phase. Don't start it.
 
-<!-- headroom:rtk-instructions -->
-# RTK (Rust Token Killer) - Token-Optimized Commands
+## graphify
 
-When running shell commands, **always prefix with `rtk`**. This reduces context
-usage by 60-90% with zero behavior change. If rtk has no filter for a command,
-it passes through unchanged — so it is always safe to use.
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
-## Key Commands
-```bash
-# Git (59-80% savings)
-rtk git status          rtk git diff            rtk git log
+When the user types `/graphify`, invoke the `skill` tool with `skill: "graphify"` before doing anything else.
 
-# Files & Search (60-75% savings)
-rtk ls <path>           rtk read <file>         rtk grep <pattern>
-rtk find <pattern>      rtk diff <file>
-
-# Test (90-99% savings) — shows failures only
-rtk pytest tests/       rtk cargo test          rtk test <cmd>
-
-# Build & Lint (80-90% savings) — shows errors only
-rtk tsc                 rtk lint                rtk cargo build
-rtk prettier --check    rtk mypy                rtk ruff check
-
-# Analysis (70-90% savings)
-rtk err <cmd>           rtk log <file>          rtk json <file>
-rtk summary <cmd>       rtk deps                rtk env
-
-# GitHub (26-87% savings)
-rtk gh pr view <n>      rtk gh run list         rtk gh issue list
-
-# Infrastructure (85% savings)
-rtk docker ps           rtk kubectl get         rtk docker logs <c>
-
-# Package managers (70-90% savings)
-rtk pip list            rtk pnpm install        rtk npm run <script>
-```
-
-## Rules
-- In command chains, prefix each segment: `rtk git add . && rtk git commit -m "msg"`
-- For debugging, use raw command without rtk prefix
-- `rtk proxy <cmd>` runs command without filtering but tracks usage
-<!-- /headroom:rtk-instructions -->
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

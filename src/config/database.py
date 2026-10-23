@@ -27,8 +27,7 @@ def init_database() -> None:
         database_url = get_database_url()
         service_logger.info("Initializing database connection", url=database_url.split('@')[-1] if '@' in database_url else database_url)
 
-        db_manager.__init__(database_url)
-        db_manager.connect()
+        db_manager.connect(database_url)
         db_manager.create_tables()
 
         service_logger.info("Database initialized successfully")

@@ -178,24 +178,29 @@ class QuestionSegmenter:
         """Segment numbered questions (1., 2., etc.)."""
         questions = []
 
-        # Find all numbered questions
-        pattern = r'(\d+)\.\s*([^(\d+\.)]+?)(?=\d+\.|$)'
-        matches = re.findall(pattern, text, re.DOTALL | re.MULTILINE)
+        # Find the start of every numbered question, then slice the text
+        # between markers. Scanning positions avoids fragile nested-quantifier
+        # regexes that silently matched nothing on ordinary exam text.
+        marker = re.compile(r'(?m)(?:^|\n)\s*(\d{1,2})\.\s+')
+        matches = list(marker.finditer(text))
 
-        for match in matches:
-            question_num = int(match[0])
-            question_text = match[1].strip()
+        for index, match in enumerate(matches):
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            question_text = text[start:end].strip()
+            if not question_text:
+                continue
 
-            # Extract options if it's a multiple choice question
             options = self._extract_options(question_text)
 
-            question = QuestionSegment(
-                question_number=question_num,
-                question_text=question_text,
-                question_type='unknown',  # Will be determined later
-                options=options
+            questions.append(
+                QuestionSegment(
+                    question_number=int(match.group(1)),
+                    question_text=question_text,
+                    question_type='unknown',  # Will be determined later
+                    options=options
+                )
             )
-            questions.append(question)
 
         return questions
 
@@ -203,21 +208,24 @@ class QuestionSegmenter:
         """Segment lettered questions (a., b., etc.)."""
         questions = []
 
-        # Find all lettered questions
-        pattern = r'([a-zA-Z])\.\s*([^([a-zA-Z]+\.)]+?)(?=[a-zA-Z]+\.|$)'
-        matches = re.findall(pattern, text, re.DOTALL | re.MULTILINE)
+        marker = re.compile(r'(?m)(?:^|\n)\s*([a-zA-Z])\.\s+')
+        matches = list(marker.finditer(text))
 
         for i, match in enumerate(matches, 1):
-            question_letter = match[0]
-            question_text = match[1].strip()
+            start = match.end()
+            end = matches[i].start() if i < len(matches) else len(text)
+            question_text = text[start:end].strip()
+            if not question_text:
+                continue
 
-            question = QuestionSegment(
-                question_number=i,  # Convert letter to number
-                question_text=f"{question_letter}. {question_text}",
-                question_type='unknown',
-                options=[]
+            questions.append(
+                QuestionSegment(
+                    question_number=i,  # Convert letter to number
+                    question_text=f"{match.group(1)}. {question_text}",
+                    question_type='unknown',
+                    options=[]
+                )
             )
-            questions.append(question)
 
         return questions
 
@@ -260,6 +268,15 @@ class QuestionSegmenter:
                 break
 
         return options
+
+    def analyze_segment(self, question: QuestionSegment) -> QuestionSegment:
+        """Public wrapper around the internal analysis step.
+
+        Phase 3 extraction uses this to enrich independently parsed question
+        spans (type, marks, difficulty, keywords) without duplicating the
+        analysis logic.
+        """
+        return self._analyze_question(question)
 
     def _analyze_question(self, question: QuestionSegment) -> QuestionSegment:
         """Analyze a question to determine its type and properties."""

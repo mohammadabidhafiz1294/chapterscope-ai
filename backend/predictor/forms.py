@@ -1,12 +1,58 @@
 from django import forms
-from .models import ExamPaper, Syllabus
+from django.conf import settings
+
+from .models import CourseNotebook, ExamPaper, Syllabus
+
+
+def validate_upload_file(uploaded_file):
+    """Validate upload extension and size against project settings.
+
+    Used by the exam-paper and syllabus upload forms (the existing upload
+    flow). Raises forms.ValidationError on failure.
+    """
+    if uploaded_file is None:
+        raise forms.ValidationError('No file was submitted.')
+
+    # Extension check (lowercase, dot-insensitive).
+    name = getattr(uploaded_file, 'name', '') or ''
+    ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+    allowed = getattr(settings, 'ALLOWED_FILE_TYPES', ['pdf', 'doc', 'docx', 'txt'])
+    if ext not in allowed:
+        raise forms.ValidationError(
+            f'Unsupported file type "{ext}". Allowed: {", ".join(allowed)}.'
+        )
+
+    max_size = getattr(settings, 'MAX_FILE_SIZE', 10 * 1024 * 1024)
+    if uploaded_file.size and uploaded_file.size > max_size:
+        raise forms.ValidationError(
+            f'File is too large ({uploaded_file.size} bytes). '
+            f'Maximum allowed is {max_size} bytes.'
+        )
+    return uploaded_file
+
+
+def _notebook_queryset(user):
+    if not user or not user.is_authenticated:
+        return CourseNotebook.objects.none()
+    return CourseNotebook.objects.filter(
+        owner=user, status=CourseNotebook.STATUS_ACTIVE
+    ).order_by('title')
+
 
 class ExamPaperUploadForm(forms.ModelForm):
     """Form for uploading exam papers."""
 
+    notebook = forms.ModelChoiceField(
+        queryset=CourseNotebook.objects.none(),
+        required=False,
+        empty_label="— No notebook (unassigned) —",
+        widget=forms.Select(attrs={'class': 'form-control'}),
+        help_text="Optionally attach this exam paper to one of your course notebooks.",
+    )
+
     class Meta:
         model = ExamPaper
-        fields = ['title', 'description', 'file', 'year']
+        fields = ['title', 'description', 'file', 'year', 'notebook']
         widgets = {
             'title': forms.TextInput(attrs={
                 'class': 'form-control',
@@ -32,12 +78,25 @@ class ExamPaperUploadForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         self.user = kwargs.pop('user', None)
         super().__init__(*args, **kwargs)
+        self.fields['notebook'].queryset = _notebook_queryset(self.user)
 
     def clean_year(self):
         year = self.cleaned_data.get('year')
         if year and (year < 2000 or year > 2030):
             raise forms.ValidationError('Year must be between 2000 and 2030')
         return year
+
+    def clean_file(self):
+        return validate_upload_file(self.cleaned_data.get('file'))
+
+    def clean(self):
+        cleaned = super().clean()
+        notebook = cleaned.get('notebook')
+        # Ownership: only the request user's notebooks are selectable; the
+        # queryset already enforces this, but double-check for safety.
+        if notebook is not None and self.user and notebook.owner_id != self.user.id:
+            self.add_error('notebook', 'You can only attach to your own notebook.')
+        return cleaned
 
     def save(self, commit=True):
         instance = super().save(commit=False)
@@ -51,9 +110,17 @@ class ExamPaperUploadForm(forms.ModelForm):
 class SyllabusUploadForm(forms.ModelForm):
     """Form for uploading syllabi."""
 
+    notebook = forms.ModelChoiceField(
+        queryset=CourseNotebook.objects.none(),
+        required=False,
+        empty_label="— No notebook (unassigned) —",
+        widget=forms.Select(attrs={'class': 'form-control'}),
+        help_text="Optionally attach this syllabus to one of your course notebooks.",
+    )
+
     class Meta:
         model = Syllabus
-        fields = ['title', 'description', 'file', 'subject']
+        fields = ['title', 'description', 'file', 'subject', 'notebook']
         widgets = {
             'title': forms.TextInput(attrs={
                 'class': 'form-control',
@@ -77,6 +144,17 @@ class SyllabusUploadForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         self.user = kwargs.pop('user', None)
         super().__init__(*args, **kwargs)
+        self.fields['notebook'].queryset = _notebook_queryset(self.user)
+
+    def clean_file(self):
+        return validate_upload_file(self.cleaned_data.get('file'))
+
+    def clean(self):
+        cleaned = super().clean()
+        notebook = cleaned.get('notebook')
+        if notebook is not None and self.user and notebook.owner_id != self.user.id:
+            self.add_error('notebook', 'You can only attach to your own notebook.')
+        return cleaned
 
     def save(self, commit=True):
         instance = super().save(commit=False)
